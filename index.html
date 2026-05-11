@@ -1,0 +1,2542 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DragScale</title>
+<style>
+* { box-sizing: border-box; }
+html, body {
+  margin: 0; padding: 0;
+  height: 100vh; width: 100vw;
+  overflow: hidden;
+  font-family: -apple-system, "PingFang TC", "Microsoft JhengHei", "Segoe UI", sans-serif;
+  background: #f5f5f5;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
+}
+/* 互動元素：確保 tap 能觸發 click，無延遲 */
+button, input, select, label,
+.swatch, .color-chip, #panel-toggle, #zoom-info, #bg-hint, .drop-box,
+.cam-bar button, .cam-bar { touch-action: manipulation; }
+
+/* 真正要攔截手勢的地方：#world 與尺的可拖曳元素 */
+#world {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+  z-index: 0;
+  touch-action: none;
+  cursor: default;
+}
+body.pan-mode #world,
+body.pan-mode .ruler-line,
+body.pan-mode .handle,
+body.pan-mode .marker,
+body.pan-mode .marker-hit { cursor: grab !important; }
+body.panning,
+body.panning #world,
+body.panning .ruler-line,
+body.panning .handle,
+body.panning .marker,
+body.panning .marker-hit { cursor: grabbing !important; user-select: none; }
+.handle.endpoint, .marker-hit, .ruler-line { touch-action: none; }
+#zoom-info {
+  position: fixed;
+  bottom: 12px; right: 12px;
+  background: rgba(0,0,0,0.7);
+  color: white;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 5px 11px;
+  border-radius: 14px;
+  z-index: 90;
+  cursor: pointer;
+  pointer-events: auto;
+  font-family: -apple-system, sans-serif;
+  transition: opacity 0.4s, background 0.15s;
+  user-select: none;
+}
+#zoom-info:hover { background: rgba(0,0,0,0.9); }
+#zoom-info::after { content: ' · ⛶'; opacity: 0.7; }
+#bg-image {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+  z-index: 0;
+  user-select: none;
+}
+#bg-hint {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: #999;
+  font-size: 14px;
+  z-index: 1;
+  cursor: pointer;
+  gap: 8px;
+}
+#bg-hint .drop-box {
+  border: 2px dashed #bbb;
+  border-radius: 12px;
+  padding: 28px 36px;
+  background: rgba(255,255,255,0.6);
+  text-align: center;
+  line-height: 1.6;
+  transition: all 0.15s;
+}
+#bg-hint:hover .drop-box {
+  border-color: #4a90e2;
+  color: #4a90e2;
+  background: rgba(255,255,255,0.85);
+}
+#bg-hint.dragover .drop-box {
+  border-color: #4a90e2;
+  background: rgba(74,144,226,0.1);
+  color: #4a90e2;
+}
+#bg-hint .icon { font-size: 32px; display: block; margin-bottom: 6px; }
+#bg-hint small { color: #aaa; font-size: 11px; display: block; margin-top: 4px; }
+
+#stage {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+}
+#controls {
+  position: fixed;
+  top: 12px; left: 12px;
+  background: rgba(255,255,255,0.97);
+  border: 1px solid #d0d0d0;
+  border-radius: 10px;
+  padding: 0 12px 10px 12px;
+  z-index: 100;
+  box-shadow: 0 4px 18px rgba(0,0,0,0.18);
+  width: 270px;
+  font-size: 13px;
+}
+#ctrl-header {
+  position: relative;
+  margin: 0 -12px 8px -12px;
+  padding: 10px 78px 10px 12px;   /* 右側留位給 header-actions */
+  border-bottom: 1px solid #eee;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: move;
+  color: #333;
+  user-select: none;
+  background: #fafafa;
+  border-radius: 10px 10px 0 0;
+}
+.header-actions {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  gap: 0;
+  align-items: center;
+}
+.hdr-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 4px 9px;
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  color: #666;
+  font-family: inherit;
+  min-width: 30px;
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.hdr-btn:hover { background: #eee; border-color: #ccc; color: #333; }
+.hdr-btn.gear { font-size: 21px; }      /* 齒輪略大 */
+/* 兼容舊選擇器 */
+.gear-btn { all: unset; }
+
+/* === Floating panel toggle (顯示於 panel 關閉時) === */
+#panel-toggle {
+  position: fixed;
+  top: 12px; left: 12px;
+  display: none;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 15px 9px 12px;
+  background: white;
+  border: 1px solid #d0d0d0;
+  border-radius: 22px;
+  font-size: 14px;
+  font-weight: 600;
+  color: #333;
+  cursor: pointer;
+  box-shadow: 0 3px 14px rgba(0,0,0,0.18);
+  z-index: 99;
+  user-select: none;
+  font-family: inherit;
+  -webkit-tap-highlight-color: transparent;
+}
+#panel-toggle:hover { background: #f7f7f7; }
+#panel-toggle:active { transform: scale(0.97); }
+#panel-toggle .ico { font-size: 18px; }
+body.panel-closed #panel-toggle { display: inline-flex; }
+body.panel-closed #controls {
+  transform: translateX(-115%);
+  opacity: 0;
+  pointer-events: none;
+}
+#controls { transition: transform 0.22s ease-out, opacity 0.18s; }
+
+/* === On-screen modifier toggles (touch devices) === */
+#modifier-bar {
+  display: none;
+  position: fixed;
+  bottom: 12px;
+  left: 12px;
+  gap: 6px;
+  z-index: 95;
+}
+@media (any-pointer: coarse) {
+  #modifier-bar { display: flex; }
+}
+.mod-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 13px;
+  height: 36px;
+  border: 1px solid #d0d0d0;
+  border-radius: 18px;
+  background: white;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: #444;
+  cursor: pointer;
+  box-shadow: 0 2px 10px rgba(0,0,0,0.15);
+  user-select: none;
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+.mod-btn .mod-ico { font-size: 16px; line-height: 1; }
+.mod-btn:active { transform: scale(0.97); }
+.mod-btn.active {
+  background: #4a90e2;
+  color: white;
+  border-color: #3a7fce;
+}
+
+/* === Larger touch target around blue endpoint dots === */
+.handle.endpoint::before {
+  content: '';
+  position: absolute;
+  inset: -10px;
+  border-radius: 50%;
+}
+
+/* === Responsive: phones / small screens === */
+@media (max-width: 700px) {
+  #controls {
+    width: calc(100vw - 20px);
+    max-width: 320px;
+    max-height: calc(100vh - 20px);
+    overflow-y: auto;
+  }
+  #zoom-info { bottom: 16px; right: 16px; padding: 7px 13px; font-size: 13px; }
+  /* Tap-friendly */
+  .row button,
+  #cal-btn,
+  #reset-btn, #replace-bg, #fit-view,
+  #settings-reset {
+    min-height: 36px;
+  }
+  /* Camera modal buttons larger */
+  .cam-bar button { padding: 11px 16px; font-size: 15px; }
+}
+@media (max-width: 380px) {
+  #panel-toggle .lbl { display: none; }   /* 太窄就只顯示 icon */
+  #panel-toggle { padding: 9px 12px; }
+}
+
+.row { display: flex; gap: 6px; align-items: center; margin: 6px 0; }
+.row label { flex: 0 0 60px; color: #555; font-size: 12px; }
+.row input[type="number"], .row input[type="text"] {
+  flex: 1; min-width: 0; padding: 5px 7px;
+  border: 1px solid #ccc; border-radius: 4px; font-size: 13px;
+}
+.row select {
+  padding: 5px 8px; border: 1px solid #ccc;
+  border-radius: 4px; background: white; cursor: pointer;
+  font-size: 12px; flex: 1;
+}
+.row button {
+  padding: 5px 10px; border: 1px solid #ccc;
+  border-radius: 4px; background: #fafafa; cursor: pointer;
+  font-size: 12px;
+}
+.row button:hover { background: #eee; }
+.row input[type="range"] { flex: 1; }
+.row input[type="color"] {
+  width: 32px; height: 28px;
+  border: 1px solid #ccc; border-radius: 4px;
+  padding: 0; background: white;
+  cursor: pointer;
+}
+.btn-primary { background: #4a90e2 !important; color: white !important; border-color: #4a90e2 !important; }
+.btn-primary:hover { background: #3a7fce !important; }
+#status {
+  font-size: 11px; color: #444;
+  margin-top: 8px; padding: 8px 10px;
+  background: #f5f5f5; border-radius: 6px;
+  min-height: 28px; line-height: 1.5;
+}
+#status.calibrated { background: #e8f5e9; color: #2e7d32; }
+#status.snapping { background: #fff3e0 !important; color: #e65100 !important; }
+#hint {
+  font-size: 10.5px; color: #888;
+  margin-top: 8px; padding-top: 8px;
+  border-top: 1px dashed #ddd;
+  line-height: 1.6;
+}
+#hint b { color: #555; }
+.tut-link {
+  display: inline-block;
+  margin: 4px 0 2px;
+  padding: 3px 8px;
+  background: rgba(74,144,226,0.08);
+  border: 1px solid rgba(74,144,226,0.3);
+  border-radius: 12px;
+  color: #4a90e2;
+  text-decoration: none;
+  font-weight: 500;
+}
+.tut-link:hover {
+  background: rgba(74,144,226,0.15);
+  border-color: #4a90e2;
+}
+
+#settings-view { padding-top: 4px; }
+#settings-view .row label { flex: 0 0 92px; }
+#settings-view input[type="range"] {
+  flex: 1 1 60px;
+  min-width: 50px;
+}
+.row-num {
+  min-width: 36px;
+  font-size: 11px;
+  text-align: right;
+  color: #555;
+  flex-shrink: 0;
+}
+
+/* End line / Marker line — single colored chip; click to open popover */
+.color-row { position: relative; }
+.color-chip {
+  width: 32px;
+  height: 24px;
+  border: 1px solid rgba(0,0,0,0.25);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0;
+  flex: 0 0 auto;
+  background-clip: padding-box;
+  transition: outline-color 0.1s;
+}
+.color-chip:hover { border-color: #555; }
+.color-chip.open {
+  outline: 2px solid #000;
+  outline-offset: 1px;
+}
+.color-popover {
+  display: none;
+  position: absolute;
+  top: calc(100% - 2px);
+  left: 98px;
+  background: white;
+  border: 1px solid #d0d0d0;
+  border-radius: 8px;
+  padding: 10px;
+  box-shadow: 0 6px 18px rgba(0,0,0,0.18);
+  z-index: 110;
+  gap: 5px;
+  width: 218px;
+  align-items: center;
+  box-sizing: border-box;
+  flex-wrap: wrap;
+}
+.color-popover.open { display: flex; }
+.color-popover .swatch {
+  width: 24px;
+  height: 24px;
+  border: 1px solid rgba(0,0,0,0.2);
+  border-radius: 4px;
+  cursor: pointer;
+  padding: 0;
+  flex: 0 0 auto;
+  background-clip: padding-box;
+}
+.color-popover .swatch:hover { border-color: #555; }
+.color-popover .swatch.selected {
+  outline: 2px solid #000;
+  outline-offset: 1px;
+  z-index: 1;
+}
+.color-popover input[type="color"] {
+  width: 30px;
+  height: 24px;
+  border: 1px solid rgba(0,0,0,0.3);
+  border-radius: 4px;
+  padding: 0;
+  cursor: pointer;
+  flex: 0 0 auto;
+  background: white;
+}
+
+#copyright-space {
+  margin-top: 22px;
+  padding-top: 14px;
+  border-top: 1px dashed #e5e5e5;
+  text-align: center;
+  color: #888;
+}
+#donate-msg {
+  font-size: 12px;
+  color: #555;
+  line-height: 1.5;
+  margin: 0 4px 10px;
+}
+#donate-qr {
+  display: block;
+  width: 132px;
+  height: 132px;
+  margin: 0 auto 10px;
+  border-radius: 6px;
+  background: white;
+  padding: 6px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+  box-sizing: border-box;
+}
+#donate-qr:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.14); }
+#donate-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0 4px;
+  padding: 7px 14px;
+  background: #29abe0;
+  color: white;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: none;
+  border-radius: 18px;
+  border: 1px solid rgba(0,0,0,0.08);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+  transition: background 0.15s, transform 0.1s;
+  font-family: inherit;
+}
+#donate-link:hover { background: #1f8fc0; }
+#donate-link:active { transform: scale(0.97); }
+#copyright-line {
+  font-size: 10px;
+  color: #bbb;
+  margin-top: 8px;
+}
+
+/* === Ruler === */
+.ruler {
+  --line-color: #d22;
+  --endmark-color: #000000;
+  --body-bg: rgba(251, 176, 64, 0.6);
+  position: absolute;
+  top: 0; left: 0;
+  height: 110px;
+  transform-origin: 0 40px;
+  pointer-events: none;
+  user-select: none;
+}
+.ruler-line {
+  position: absolute;
+  top: 22px;
+  left: 0; right: 0;
+  height: 36px;
+  background: var(--body-bg);
+  border: 1px solid #444;
+  cursor: move;
+  pointer-events: auto;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+.tick {
+  position: absolute;
+  top: 0;
+  width: 1px;
+  background: #222;
+  pointer-events: none;
+}
+.tick.major { height: 14px; }
+.tick.medium { height: 9px; }
+.tick.minor { height: 5px; }
+.tick-label {
+  position: absolute;
+  top: 19px;
+  font-size: 10px;
+  white-space: nowrap;
+  color: #222;
+  pointer-events: none;
+  font-family: -apple-system, sans-serif;
+}
+
+/* 三條延伸線：兩端點 + 紅三角的，全部在尺上方，距尺 3px。
+   全部改用顯式像素定位（左移 1px 對齊中線），確保跟紅三角嚴格對齊。
+   端點線預設黑、紅三角線採用線色，兩者可分別自定。 */
+.endmark, .marker-line {
+  position: absolute;
+  width: 2px;
+  pointer-events: none;
+  z-index: 4;
+  border-radius: 1px;
+}
+.endmark      { background: var(--endmark-color); }
+.marker-line  { background: var(--line-color); }
+.endmark.start { left: -1px; }
+.endmark.end   { left: calc(100% - 1px); }
+/* top, height 由 JS 設定；marker-line 的 left 由 JS 設定 */
+
+.handle {
+  position: absolute;
+  border-radius: 50%;
+  border: 2px solid white;
+  pointer-events: auto;
+  z-index: 5;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.5);
+}
+/* 端點藍色圓：原 16px 縮為 70% ≈ 11px，置於尺中線 (y=40) */
+.handle.endpoint {
+  width: 11px; height: 11px;
+  background: #4a90e2;
+  top: 34.5px;
+  cursor: grab;
+  border-width: 1.5px;
+}
+.handle.endpoint:active { cursor: grabbing; }
+.handle.endpoint.start { left: -5.5px; }
+.handle.endpoint.end   { right: -5.5px; }
+
+/* 紅三角：尺下方，距尺 3px，尖點向上 — 用顯式 left 定位（不依賴 transform） */
+.marker {
+  position: absolute;
+  width: 0; height: 0;
+  border-left: 8px solid transparent;
+  border-right: 8px solid transparent;
+  border-bottom: 14px solid var(--line-color);
+  cursor: ew-resize;
+  pointer-events: auto;
+  z-index: 6;
+  filter: drop-shadow(0 1px 2px rgba(0,0,0,0.4));
+}
+.marker-hit {
+  position: absolute;
+  top: 59px;
+  width: 24px;
+  height: 22px;
+  cursor: ew-resize;
+  pointer-events: auto;
+  z-index: 6;
+  background: transparent;
+}
+.marker-label {
+  position: absolute;
+  background: var(--line-color);
+  color: white;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+  z-index: 6;
+  font-family: -apple-system, sans-serif;
+}
+.zero-label {
+  position: absolute;
+  left: 0;
+  background: #4a90e2;
+  color: white;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  pointer-events: none;
+  font-family: -apple-system, sans-serif;
+  white-space: nowrap;
+  transform-origin: 50% 100%;
+}
+
+/* === Camera Modal === */
+#camera-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.94);
+  z-index: 200;
+  display: none;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: center;
+  color: white;
+}
+#camera-modal.open { display: flex; }
+.cam-stage {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  gap: 14px;
+  min-height: 0;
+}
+#cam-video {
+  max-width: 100%;
+  max-height: calc(100vh - 130px);
+  background: #000;
+  border-radius: 6px;
+}
+#edit-area {
+  position: relative;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 0;
+}
+#edit-canvas {
+  display: block;
+  max-width: 100%;
+  max-height: calc(100vh - 130px);
+  background: #111;
+  border-radius: 4px;
+}
+#crop-rect {
+  position: absolute;
+  border: 2px dashed #4a90e2;
+  background: rgba(74, 144, 226, 0.08);
+  cursor: move;
+  box-sizing: border-box;
+}
+.crop-handle {
+  position: absolute;
+  width: 14px; height: 14px;
+  background: #4a90e2;
+  border: 2px solid white;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.6);
+}
+.crop-handle.h-tl { top: -8px; left:  -8px; cursor: nwse-resize; }
+.crop-handle.h-tr { top: -8px; right: -8px; cursor: nesw-resize; }
+.crop-handle.h-bl { bottom: -8px; left:  -8px; cursor: nesw-resize; }
+.crop-handle.h-br { bottom: -8px; right: -8px; cursor: nwse-resize; }
+.cam-bar {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+  padding: 8px;
+}
+.cam-bar button {
+  padding: 9px 14px;
+  background: #2a2a2a;
+  color: white;
+  border: 1px solid #555;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  font-family: inherit;
+}
+.cam-bar button:hover { background: #3a3a3a; }
+.cam-bar button.primary {
+  background: #4a90e2; border-color: #4a90e2;
+}
+.cam-bar button.primary:hover { background: #3a7fce; }
+.cam-bar button.danger {
+  background: #6b2a2a; border-color: #8a3a3a;
+}
+.cam-error {
+  color: #ffb3b3;
+  font-size: 13px;
+  text-align: center;
+  padding: 8px;
+}
+</style>
+</head>
+<body>
+
+<div id="bg-hint">
+  <div class="drop-box">
+    <span class="icon">🖼️</span>
+    <span data-i18n="bgHintMain">Click to choose an image, or drop / paste (Ctrl/Cmd+V)</span>
+    <small data-i18n="bgHintSub">Supports JPG, PNG, WebP, GIF…</small>
+  </div>
+</div>
+<div id="world">
+  <img id="bg-image" style="display:none" alt="">
+  <div id="stage"></div>
+</div>
+<div id="zoom-info" style="display:none;">100%</div>
+
+<!-- Camera Modal -->
+<div id="camera-modal">
+  <div class="cam-stage" id="cam-live">
+    <video id="cam-video" autoplay playsinline muted></video>
+    <div id="cam-error-msg" class="cam-error" style="display:none;"></div>
+    <div class="cam-bar">
+      <button id="cam-cancel" data-i18n="camCancel">Cancel</button>
+      <button id="cam-upload" data-i18n="camChooseFile">📁 Choose file</button>
+      <button id="cam-shoot" class="primary" data-i18n="camCapture">📷 Capture</button>
+    </div>
+  </div>
+  <div class="cam-stage" id="cam-edit" style="display:none;">
+    <div id="edit-area">
+      <canvas id="edit-canvas"></canvas>
+      <div id="crop-rect">
+        <div class="crop-handle h-tl"></div>
+        <div class="crop-handle h-tr"></div>
+        <div class="crop-handle h-bl"></div>
+        <div class="crop-handle h-br"></div>
+      </div>
+    </div>
+    <div class="cam-bar">
+      <button id="cam-retake" data-i18n="camRetake">Retake</button>
+      <button id="cam-rot-left" data-i18n="camRotateL">↺ Rotate</button>
+      <button id="cam-rot-right" data-i18n="camRotateR">↻ Rotate</button>
+      <button id="cam-reset-crop" data-i18n="camResetCrop">Reset crop</button>
+      <button id="cam-confirm" class="primary" data-i18n="camUse">Use photo</button>
+    </div>
+  </div>
+</div>
+
+<!-- Floating panel toggle (visible when panel is closed) -->
+<button id="panel-toggle" type="button" data-i18n-title="openPanel" aria-label="Open panel">
+  <span class="ico">📏</span>
+  <span class="lbl">DragScale</span>
+</button>
+
+<!-- On-screen toggles (touch devices only) -->
+<div id="modifier-bar">
+  <button class="mod-btn" id="mod-lock" type="button" aria-label="Toggle Lock">
+    <span class="mod-ico">📐</span><span class="mod-lbl" data-i18n="lock">Lock</span>
+  </button>
+  <button class="mod-btn" id="mod-snap" type="button" aria-label="Toggle edge snap">
+    <span class="mod-ico">🧲</span><span class="mod-lbl" data-i18n="snap">Snap</span>
+  </button>
+</div>
+
+<div id="controls">
+  <div id="ctrl-header">
+    <span id="ctrl-title">📏 DragScale</span>
+    <div class="header-actions">
+      <button class="hdr-btn" id="back-btn" data-i18n-title="back" title="Back" style="display:none;">←</button>
+      <button class="hdr-btn gear" id="gear-btn" data-i18n-title="settings" title="Settings">⚙</button>
+      <button class="hdr-btn" id="close-btn" data-i18n-title="closePanel" title="Close panel">✕</button>
+    </div>
+  </div>
+
+  <!-- Main view -->
+  <div id="main-view">
+    <div class="row">
+      <label data-i18n="length">Length</label>
+      <input type="number" id="cal-value" data-i18n-placeholder="placeholderLength" placeholder="e.g. 345" step="any">
+      <button id="cal-btn" class="btn-primary" data-i18n="calibrateBtn">Calibrate</button>
+    </div>
+    <div class="row">
+      <label data-i18n="unit">Unit</label>
+      <select id="unit-select">
+        <option value="cm">cm</option>
+        <option value="m">m</option>
+        <option value="mm">mm</option>
+        <option value="inch">inch</option>
+      </select>
+    </div>
+    <div class="row">
+      <label data-i18n="opacity">Opacity</label>
+      <input type="range" id="opacity" min="0.15" max="1" step="0.05" value="1">
+      <span id="opacity-val" style="min-width:38px; font-size:11px; text-align:right;">100%</span>
+    </div>
+    <div class="row">
+      <label data-i18n="edgeSnap">Edge snap</label>
+      <input type="checkbox" id="snap-enabled" checked style="flex:0;">
+      <span id="snap-status" style="font-size:11px; color:#888;">Image required</span>
+    </div>
+    <div class="row">
+      <label data-i18n="image">Image</label>
+      <input type="file" id="bg-input" accept="image/*" style="font-size: 11px; flex:1; min-width:0;">
+    </div>
+    <div class="row">
+      <button id="reset-btn" style="flex:1;" data-i18n="resetRuler">Reset ruler</button>
+      <button id="replace-bg" style="flex:1;" data-i18n="replaceImage">Replace image</button>
+    </div>
+    <div class="row">
+      <button id="fit-view" style="flex:1;" data-i18n="fitToView">⛶ Fit to view</button>
+    </div>
+    <div id="status">Not calibrated — align the ruler with a known dimension and enter its length.</div>
+    <div id="hint" data-i18n-html="hintHtml"></div>
+  </div>
+
+  <!-- Settings view -->
+  <div id="settings-view" style="display:none;">
+    <div class="row">
+      <label data-i18n="language">Language</label>
+      <select id="lang-select">
+        <option value="en">English</option>
+        <option value="zh">中文</option>
+        <option value="ja">日本語</option>
+        <option value="ko">한국어</option>
+      </select>
+    </div>
+    <div class="row">
+      <label data-i18n="rulerBody">Ruler body</label>
+      <input type="color" id="body-color" value="#fbb040">
+      <input type="range" id="body-alpha" min="0.1" max="1" step="0.05" value="0.6" style="flex: 0 1 70px;">
+      <span id="body-alpha-val" class="row-num">60%</span>
+    </div>
+    <div class="row color-row">
+      <label data-i18n="endLine">End line</label>
+      <button class="color-chip" id="endmark-chip" type="button"></button>
+      <div class="color-popover" id="endmark-popover">
+        <input type="color" id="endmark-color" value="#000000">
+        <button class="swatch" type="button" data-c="#dd2222" style="background:#dd2222"></button>
+        <button class="swatch" type="button" data-c="#ff8c00" style="background:#ff8c00"></button>
+        <button class="swatch" type="button" data-c="#fbc02d" style="background:#fbc02d"></button>
+        <button class="swatch" type="button" data-c="#2e7d32" style="background:#2e7d32"></button>
+        <button class="swatch" type="button" data-c="#1976d2" style="background:#1976d2"></button>
+        <button class="swatch" type="button" data-c="#7b1fa2" style="background:#7b1fa2"></button>
+        <button class="swatch" type="button" data-c="#000000" style="background:#000"></button>
+        <button class="swatch" type="button" data-c="#ffffff" style="background:#fff"></button>
+      </div>
+    </div>
+    <div class="row color-row">
+      <label data-i18n="markerLine">Marker line</label>
+      <button class="color-chip" id="line-chip" type="button"></button>
+      <div class="color-popover" id="line-popover">
+        <input type="color" id="line-color" value="#dd2222">
+        <button class="swatch" type="button" data-c="#dd2222" style="background:#dd2222"></button>
+        <button class="swatch" type="button" data-c="#ff8c00" style="background:#ff8c00"></button>
+        <button class="swatch" type="button" data-c="#fbc02d" style="background:#fbc02d"></button>
+        <button class="swatch" type="button" data-c="#2e7d32" style="background:#2e7d32"></button>
+        <button class="swatch" type="button" data-c="#1976d2" style="background:#1976d2"></button>
+        <button class="swatch" type="button" data-c="#7b1fa2" style="background:#7b1fa2"></button>
+        <button class="swatch" type="button" data-c="#000000" style="background:#000"></button>
+        <button class="swatch" type="button" data-c="#ffffff" style="background:#fff"></button>
+      </div>
+    </div>
+    <div class="row">
+      <label data-i18n="endLength">End length</label>
+      <input type="range" id="endmark-len" min="5" max="60" step="1" value="15">
+      <span id="endmark-len-val" class="row-num">15px</span>
+    </div>
+    <div class="row">
+      <label data-i18n="markerLength">Marker length</label>
+      <input type="range" id="markerline-len" min="3" max="50" step="1" value="10">
+      <span id="markerline-len-val" class="row-num">10px</span>
+    </div>
+    <div class="row" style="margin-top:14px;">
+      <button id="settings-reset" style="flex:1;" data-i18n="restoreDefaults">Restore defaults</button>
+    </div>
+    <div id="copyright-space">
+      <div id="donate-msg" data-i18n="donateMsg">If this tool helped you, treat me to a coffee ☕</div>
+      <img id="donate-qr" src="donate.png?v=2" alt="Coffee QR" loading="lazy">
+      <a id="donate-link" href="https://ko-fi.com/raymondlin" target="_blank" rel="noopener">
+        ☕ <span data-i18n="donateBtn">Buy me a coffee</span>
+      </a>
+      <div id="copyright-line">© 2025 Raymond Lin</div>
+    </div>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+// ============== i18n ==============
+
+const I18N = {
+  en: {
+    settingsTitle: '⚙ Settings',
+    appTitle: '📏 DragScale',
+    settings: 'Settings',
+    back: 'Back',
+    closePanel: 'Close panel',
+    openPanel: 'Open panel',
+    language: 'Language',
+    length: 'Length',
+    placeholderLength: 'e.g. 345',
+    calibrateBtn: 'Calibrate',
+    unit: 'Unit',
+    opacity: 'Opacity',
+    edgeSnap: 'Edge snap',
+    image: 'Image',
+    resetRuler: 'Reset ruler',
+    replaceImage: 'Replace image',
+    fitToView: '⛶ Fit to view',
+    notCalibrated: 'Not calibrated — align with a known dimension and press Calibrate.',
+    calibratedLabel: 'Calibrated',
+    statusLength: 'Length',
+    statusMarker: 'Marker',
+    snapped: '🧲 Snapped',
+    snapImageRequired: 'Image required',
+    snapAnalyzing: 'Analyzing…',
+    snapReady: 'Ready',
+    snapCannotAnalyze: 'Cannot analyze',
+    rulerBody: 'Ruler body',
+    endLine: 'End line',
+    markerLine: 'Marker line',
+    endLength: 'End length',
+    markerLength: 'Marker length',
+    restoreDefaults: 'Restore defaults',
+    bgHintMain: 'Click to choose an image, or drop / paste (Ctrl/Cmd+V)',
+    bgHintSub: 'Supports JPG, PNG, WebP, GIF…',
+    camCancel: 'Cancel',
+    camChooseFile: '📁 Choose file',
+    camCapture: '📷 Capture',
+    camRetake: 'Retake',
+    camRotateL: '↺ Rotate',
+    camRotateR: '↻ Rotate',
+    camResetCrop: 'Reset crop',
+    camUse: 'Use photo',
+    alertEnterValue: 'Please enter a value greater than 0.',
+    alertDragMarker: 'Drag the red marker to the other end of the segment first.',
+    alertLowQuality: 'Image quality is low and may affect some features (e.g. edge snap).\nUse this image anyway?',
+    camNotSupported: 'Camera is not available in this browser. Use "Choose file" instead.',
+    camCannotAccess: 'Cannot access camera: ',
+    camNotReady: 'Camera not ready, please wait.',
+    lock: 'Lock',
+    snap: 'Snap',
+    donateMsg: 'If this tool helped you, feel free to treat me to a coffee ☕',
+    donateBtn: 'Buy me a coffee',
+    hintHtml:
+      '<b>How to use</b><br>' +
+      '1. Upload a to-scale floor plan or elevation drawing.<br>' +
+      '2. Drag the ruler onto a segment of known length and align one end with it. Use the <b>blue endpoints</b> to rotate or resize.<br>' +
+      '3. Drag the <b>red marker</b> to the other end of that segment.<br>' +
+      '4. Enter the actual length and press <b>Calibrate</b>. The scale stays locked until you calibrate again.<br>' +
+      '5. Enable <b style="color:#e65100;">Edge Snap</b> to auto-align with line segments.<br>' +
+      '6. The scale must be recalibrated after each new image upload.<br>' +
+      '<a class="tut-link" href="Tutorial.mp4" target="_blank" rel="noopener">🎬 Watch tutorial video</a><br><br>' +
+      '<b>Desktop</b> — hold <b>Shift</b> to lock H/V or 15° rotation; hold <b>Option / Alt</b> to suspend snap. Hold <b>Space</b> and drag (or drag on empty area) to pan.<br>' +
+      '<b>Touch</b> — tap <b>📐 Lock</b> to constrain dragging; tap <b>🧲 Snap</b> to toggle edge snap. Drag on an empty area to pan; pinch with two fingers to zoom.',
+  },
+  zh: {
+    settingsTitle: '⚙ 設定',
+    appTitle: '📏 DragScale',
+    settings: '設定',
+    back: '返回',
+    closePanel: '收起',
+    openPanel: '展開',
+    language: '語言',
+    length: '長度',
+    placeholderLength: '例如 345',
+    calibrateBtn: '校準',
+    unit: '單位',
+    opacity: '透明度',
+    edgeSnap: '邊緣靠齊',
+    image: '底圖',
+    resetRuler: '重置比例尺',
+    replaceImage: '置換底圖',
+    fitToView: '⛶ 符合畫面',
+    notCalibrated: '尚未校準 — 對齊已知尺寸並輸入長度後按「校準」。',
+    calibratedLabel: '已校準',
+    statusLength: '尺長',
+    statusMarker: '紅三角',
+    snapped: '🧲 已吸附',
+    snapImageRequired: '需先上傳底圖',
+    snapAnalyzing: '分析中…',
+    snapReady: '就緒',
+    snapCannotAnalyze: '無法分析',
+    rulerBody: '尺身',
+    endLine: '端線',
+    markerLine: '定位線',
+    endLength: '端線長',
+    markerLength: '定位線長',
+    restoreDefaults: '恢復預設',
+    bgHintMain: '點此選擇圖片，或拖入 / 貼上 (Ctrl/Cmd+V)',
+    bgHintSub: '支援 JPG、PNG、WebP、GIF…',
+    camCancel: '取消',
+    camChooseFile: '📁 選擇檔案',
+    camCapture: '📷 拍照',
+    camRetake: '重拍',
+    camRotateL: '↺ 左轉',
+    camRotateR: '↻ 右轉',
+    camResetCrop: '全選',
+    camUse: '使用此圖',
+    alertEnterValue: '請輸入大於 0 的值。',
+    alertDragMarker: '請先把紅色定位點拖到要量測的另一端。',
+    alertLowQuality: '圖片品質不佳，可能影響部分功能（如邊緣靠齊）。\n仍要使用此圖嗎？',
+    camNotSupported: '此瀏覽器不支援相機，請改用「選擇檔案」。',
+    camCannotAccess: '無法存取相機：',
+    camNotReady: '相機尚未就緒，請稍候。',
+    lock: '鎖定',
+    snap: '吸附',
+    donateMsg: '如果這個小工具對你有幫助，歡迎請我喝杯咖啡 ☕',
+    donateBtn: '請我喝杯咖啡',
+    hintHtml:
+      '<b>使用方式</b><br>' +
+      '1. 上傳符合比例的平面圖或立面圖。<br>' +
+      '2. 把比例尺拖到已知長度的線段上並對齊其中一端。<b>藍點</b>可旋轉或調整尺長。<br>' +
+      '3. 把<b>紅色定位點</b>拖到該線段另一端。<br>' +
+      '4. 輸入實際長度後按<b>校準</b>。比例會維持，直到再次校準。<br>' +
+      '5. 啟用<b style="color:#e65100;">邊緣靠齊</b>可自動對齊圖中的線段。<br>' +
+      '6. 每次照片上傳後需要重新校準比例。<br>' +
+      '<a class="tut-link" href="Tutorial.mp4" target="_blank" rel="noopener">🎬 觀看影片教學</a><br><br>' +
+      '<b>桌面</b> — 按住 <b>Shift</b> 鎖水平/垂直或 15° 旋轉；按住 <b>Option / Alt</b> 暫停吸附；按住 <b>Space</b> 拖移（或直接在空白處拖移）來平移畫面。<br>' +
+      '<b>觸控</b> — 點 <b>📐 鎖定</b> 限制拖動；點 <b>🧲 吸附</b> 切換靠齊。空白處單指拖移平移畫面；兩指捏合縮放。',
+  },
+  ja: {
+    settingsTitle: '⚙ 設定',
+    appTitle: '📏 DragScale',
+    settings: '設定',
+    back: '戻る',
+    closePanel: '閉じる',
+    openPanel: '開く',
+    language: '言語',
+    length: '長さ',
+    placeholderLength: '例：345',
+    calibrateBtn: '校正',
+    unit: '単位',
+    opacity: '不透明度',
+    edgeSnap: 'エッジスナップ',
+    image: '背景',
+    resetRuler: 'スケールをリセット',
+    replaceImage: '画像を変更',
+    fitToView: '⛶ 全体表示',
+    notCalibrated: '未校正 — 既知の寸法に揃えて「校正」を押してください。',
+    calibratedLabel: '校正済み',
+    statusLength: '長さ',
+    statusMarker: 'マーカー',
+    snapped: '🧲 スナップ',
+    snapImageRequired: '画像が必要です',
+    snapAnalyzing: '解析中…',
+    snapReady: '準備完了',
+    snapCannotAnalyze: '解析できません',
+    rulerBody: '本体',
+    endLine: '端線',
+    markerLine: 'マーカー線',
+    endLength: '端線の長さ',
+    markerLength: 'マーカー線の長さ',
+    restoreDefaults: 'デフォルトに戻す',
+    bgHintMain: 'クリックして画像を選択、またはドロップ／ペースト (Ctrl/Cmd+V)',
+    bgHintSub: 'JPG、PNG、WebP、GIF など対応',
+    camCancel: 'キャンセル',
+    camChooseFile: '📁 ファイルを選択',
+    camCapture: '📷 撮影',
+    camRetake: '撮り直す',
+    camRotateL: '↺ 左回転',
+    camRotateR: '↻ 右回転',
+    camResetCrop: '全選択',
+    camUse: 'この画像を使用',
+    alertEnterValue: '0 より大きい値を入力してください。',
+    alertDragMarker: '赤いマーカーを測定したい範囲のもう一端へドラッグしてください。',
+    alertLowQuality: '画像の品質が低く、一部機能（エッジスナップなど）に影響する可能性があります。\nそれでも使用しますか？',
+    camNotSupported: 'このブラウザではカメラを使用できません。「ファイルを選択」をお使いください。',
+    camCannotAccess: 'カメラにアクセスできません：',
+    camNotReady: 'カメラの準備中です。',
+    lock: 'ロック',
+    snap: 'スナップ',
+    donateMsg: 'このツールがお役に立てたなら、よろしければコーヒー一杯どうぞ ☕',
+    donateBtn: 'コーヒーをおごる',
+    hintHtml:
+      '<b>使い方</b><br>' +
+      '1. 縮尺通りの平面図や立面図をアップロード。<br>' +
+      '2. 既知の長さの線分にスケールをドラッグし、片端に揃える。<b>青い端点</b>で回転や長さ調整。<br>' +
+      '3. <b>赤いマーカー</b>を同じ線分の反対側の端へドラッグ。<br>' +
+      '4. 実寸を入力して<b>校正</b>。再校正するまで縮尺は固定されます。<br>' +
+      '5. <b style="color:#e65100;">エッジスナップ</b>を有効にすると線分に自動整列。<br>' +
+      '6. 画像をアップロードするたびに再校正が必要です。<br>' +
+      '<a class="tut-link" href="Tutorial.mp4" target="_blank" rel="noopener">🎬 チュートリアル動画を見る</a><br><br>' +
+      '<b>デスクトップ</b> — <b>Shift</b> で水平/垂直または 15° 回転をロック；<b>Option / Alt</b> でスナップ一時停止；<b>Space</b> を押しながらドラッグ（または空白部分をドラッグ）で画面を移動。<br>' +
+      '<b>タッチ</b> — <b>📐 ロック</b> で方向を制限；<b>🧲 スナップ</b> で吸着の切替。空白部分を一本指でドラッグすると画面移動；二本指でピンチズーム。',
+  },
+  ko: {
+    settingsTitle: '⚙ 설정',
+    appTitle: '📏 DragScale',
+    settings: '설정',
+    back: '뒤로',
+    closePanel: '닫기',
+    openPanel: '열기',
+    language: '언어',
+    length: '길이',
+    placeholderLength: '예: 345',
+    calibrateBtn: '보정',
+    unit: '단위',
+    opacity: '투명도',
+    edgeSnap: '가장자리 스냅',
+    image: '이미지',
+    resetRuler: '자 초기화',
+    replaceImage: '이미지 교체',
+    fitToView: '⛶ 화면 맞춤',
+    notCalibrated: '미보정 — 알려진 치수에 맞추고 "보정"을 누르세요.',
+    calibratedLabel: '보정됨',
+    statusLength: '길이',
+    statusMarker: '마커',
+    snapped: '🧲 스냅됨',
+    snapImageRequired: '이미지 필요',
+    snapAnalyzing: '분석 중…',
+    snapReady: '준비됨',
+    snapCannotAnalyze: '분석 불가',
+    rulerBody: '자 본체',
+    endLine: '끝선',
+    markerLine: '마커선',
+    endLength: '끝선 길이',
+    markerLength: '마커선 길이',
+    restoreDefaults: '기본값 복원',
+    bgHintMain: '이미지를 선택하거나 끌어놓기 / 붙여넣기 (Ctrl/Cmd+V)',
+    bgHintSub: 'JPG, PNG, WebP, GIF 등 지원',
+    camCancel: '취소',
+    camChooseFile: '📁 파일 선택',
+    camCapture: '📷 촬영',
+    camRetake: '다시 촬영',
+    camRotateL: '↺ 왼쪽 회전',
+    camRotateR: '↻ 오른쪽 회전',
+    camResetCrop: '전체 선택',
+    camUse: '이 사진 사용',
+    alertEnterValue: '0보다 큰 값을 입력하세요.',
+    alertDragMarker: '빨간 마커를 측정할 다른 끝으로 먼저 드래그하세요.',
+    alertLowQuality: '이미지 품질이 낮아 일부 기능(가장자리 스냅 등)에 영향을 줄 수 있습니다.\n그래도 사용하시겠습니까?',
+    camNotSupported: '이 브라우저에서는 카메라를 사용할 수 없습니다. "파일 선택"을 사용하세요.',
+    camCannotAccess: '카메라에 접근할 수 없습니다: ',
+    camNotReady: '카메라 준비 중입니다.',
+    lock: '잠금',
+    snap: '스냅',
+    donateMsg: '이 도구가 도움이 되셨다면 부담 없이 커피 한 잔 어떠세요 ☕',
+    donateBtn: '커피 사주기',
+    hintHtml:
+      '<b>사용 방법</b><br>' +
+      '1. 비례에 맞는 평면도나 입면도를 업로드합니다.<br>' +
+      '2. 알려진 길이의 선분에 자를 드래그하여 한쪽 끝에 맞춥니다. <b>파란 끝점</b>으로 회전·크기 조정.<br>' +
+      '3. <b>빨간 마커</b>를 같은 선분의 반대쪽 끝으로 드래그합니다.<br>' +
+      '4. 실제 길이를 입력하고 <b>보정</b>을 누릅니다. 다시 보정할 때까지 척도가 유지됩니다.<br>' +
+      '5. <b style="color:#e65100;">가장자리 스냅</b>을 켜면 선에 자동 정렬됩니다.<br>' +
+      '6. 이미지를 업로드할 때마다 다시 보정해야 합니다.<br>' +
+      '<a class="tut-link" href="Tutorial.mp4" target="_blank" rel="noopener">🎬 튜토리얼 영상 보기</a><br><br>' +
+      '<b>데스크톱</b> — <b>Shift</b>로 수평/수직 또는 15° 회전 잠금; <b>Option / Alt</b>로 스냅 일시 중지; <b>Space</b>를 누른 채 드래그(또는 빈 곳을 드래그)하여 화면 이동.<br>' +
+      '<b>터치</b> — <b>📐 잠금</b>으로 방향 제한; <b>🧲 스냅</b>으로 가장자리 스냅 전환. 빈 곳을 한 손가락으로 드래그하면 화면 이동; 두 손가락으로 확대/축소.',
+  },
+};
+
+let currentLang = 'en';
+const t = (key) => (I18N[currentLang]?.[key] ?? I18N.en[key] ?? key);
+
+function detectBrowserLang() {
+  const code = (navigator.language || 'en').toLowerCase();
+  if (code.startsWith('zh')) return 'zh';
+  if (code.startsWith('ja')) return 'ja';
+  if (code.startsWith('ko')) return 'ko';
+  return 'en';
+}
+
+function applyLang(lang) {
+  if (!I18N[lang]) lang = 'en';
+  currentLang = lang;
+  // Static text via data-i18n
+  document.querySelectorAll('[data-i18n]').forEach(el => {
+    const v = I18N[lang][el.dataset.i18n];
+    if (v !== undefined) el.textContent = v;
+  });
+  document.querySelectorAll('[data-i18n-html]').forEach(el => {
+    const v = I18N[lang][el.dataset.i18nHtml];
+    if (v !== undefined) el.innerHTML = v;
+  });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => {
+    const v = I18N[lang][el.dataset.i18nPlaceholder];
+    if (v !== undefined) el.placeholder = v;
+  });
+  document.querySelectorAll('[data-i18n-title]').forEach(el => {
+    const v = I18N[lang][el.dataset.i18nTitle];
+    if (v !== undefined) el.title = v;
+  });
+  // Header title 隨主畫面/設定畫面切換
+  const isSettings = document.getElementById('settings-view').style.display !== 'none';
+  document.getElementById('ctrl-title').textContent = isSettings ? t('settingsTitle') : t('appTitle');
+  // Sync language selector
+  const sel = document.getElementById('lang-select');
+  if (sel && sel.value !== lang) sel.value = lang;
+  // Re-render dynamic strings
+  if (typeof render === 'function') render();
+  // Update snap status if not yet processed
+  const ss = document.getElementById('snap-status');
+  if (ss && !edgeData) ss.textContent = t('snapImageRequired');
+  try { localStorage.setItem('dragScaleLang', lang); } catch (e) {}
+}
+
+// ============== 預設與狀態 ==============
+
+const DEFAULTS = {
+  lineColor: '#dd2222',
+  endmarkColor: '#000000',
+  endmarkLen: 15,
+  markerLineLen: 10,
+  bodyColor: '#fbb040',
+  bodyAlpha: 0.6,
+};
+
+const state = {
+  startX: 280, startY: 240,
+  length: 400, angle: 0,
+  pixelsPerCm: 1,
+  calibrated: false,
+  unit: 'cm',
+  markerPos: 200,
+  opacity: 1,
+  // 視角
+  zoom: 1,
+  panX: 0,
+  panY: 0,
+  // 可自定義
+  lineColor:     DEFAULTS.lineColor,
+  endmarkColor:  DEFAULTS.endmarkColor,
+  endmarkLen:    DEFAULTS.endmarkLen,
+  markerLineLen: DEFAULTS.markerLineLen,
+  bodyColor:     DEFAULTS.bodyColor,
+  bodyAlpha:     DEFAULTS.bodyAlpha,
+};
+
+// 載入持久化設定
+try {
+  const saved = JSON.parse(localStorage.getItem('dragScaleSettings') || '{}');
+  if (saved.lineColor)               state.lineColor     = saved.lineColor;
+  if (saved.endmarkColor)            state.endmarkColor  = saved.endmarkColor;
+  if (saved.endmarkLen)              state.endmarkLen    = saved.endmarkLen;
+  if (saved.markerLineLen)           state.markerLineLen = saved.markerLineLen;
+  if (saved.bodyColor)               state.bodyColor     = saved.bodyColor;
+  if (typeof saved.bodyAlpha === 'number') state.bodyAlpha = saved.bodyAlpha;
+} catch (e) {}
+
+function saveSettings() {
+  try {
+    localStorage.setItem('dragScaleSettings', JSON.stringify({
+      lineColor: state.lineColor,
+      endmarkColor: state.endmarkColor,
+      endmarkLen: state.endmarkLen,
+      markerLineLen: state.markerLineLen,
+      bodyColor: state.bodyColor,
+      bodyAlpha: state.bodyAlpha,
+    }));
+  } catch (e) {}
+}
+
+function hexToRgba(hex, alpha) {
+  const h = hex.replace('#', '');
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
+const UNITS = {
+  cm:   { factor: 1,        label: 'cm' },
+  m:    { factor: 0.01,     label: 'm'  },
+  mm:   { factor: 10,       label: 'mm' },
+  inch: { factor: 1/2.54,   label: 'in' },
+};
+
+const cmToUnit = (cm) => cm * UNITS[state.unit].factor;
+const unitToCm = (v)  => v  / UNITS[state.unit].factor;
+
+// ============== 尺的 DOM ==============
+
+const stage = document.getElementById('stage');
+const ruler = document.createElement('div');
+ruler.className = 'ruler';
+ruler.innerHTML = `
+  <div class="endmark start" id="em-start"></div>
+  <div class="endmark end"   id="em-end"></div>
+  <div class="marker-line"   id="marker-line"></div>
+  <div class="ruler-line" id="rline">
+    <div id="ticks"></div>
+  </div>
+  <div class="zero-label" id="zero-label">0</div>
+  <div class="handle endpoint start" id="h-start" title="Drag to rotate / resize from this end"></div>
+  <div class="handle endpoint end"   id="h-end"   title="Drag to rotate / resize from this end"></div>
+  <div class="marker" id="marker"></div>
+  <div class="marker-hit" id="marker-hit" title="Drag to set the measurement point"></div>
+  <div class="marker-label" id="marker-label">0</div>
+`;
+stage.appendChild(ruler);
+
+function niceInterval(target) {
+  if (!isFinite(target) || target <= 0) return 1;
+  const exp = Math.floor(Math.log10(target));
+  const base = Math.pow(10, exp);
+  const f = target / base;
+  let nice;
+  if (f < 1.5) nice = 1;
+  else if (f < 3.5) nice = 2;
+  else if (f < 7.5) nice = 5;
+  else nice = 10;
+  return nice * base;
+}
+
+function fmt(v) {
+  if (v === 0) return '0';
+  const abs = Math.abs(v);
+  if (abs >= 100)  return v.toFixed(0);
+  if (abs >= 10)   return v.toFixed(1);
+  if (abs >= 1)    return v.toFixed(2);
+  return v.toFixed(3);
+}
+
+let snapVisualHit = false;
+
+const TOP_LINE_BASE = 19;     // 三條紅色線的底端 Y（尺頂在 22，間距 3px）
+const TRI_TOP       = 61;     // 紅三角頂點 Y（尺底在 58，間距 3px）
+const AXIS_Y        = 40;     // 尺軸在容器局部的 Y 座標（與 transform-origin 一致）
+
+function render() {
+  const inv = -state.angle;
+  ruler.style.transform = `translate(${state.startX}px, ${state.startY - AXIS_Y}px) rotate(${state.angle}rad)`;
+  ruler.style.width = state.length + 'px';
+  ruler.style.opacity = state.opacity;
+  ruler.style.setProperty('--line-color', state.lineColor);
+  ruler.style.setProperty('--endmark-color', state.endmarkColor);
+  ruler.style.setProperty('--body-bg', hexToRgba(state.bodyColor, state.bodyAlpha));
+
+  // 端點延伸線（兩條）
+  const L_em = state.endmarkLen;
+  const emTop = TOP_LINE_BASE - L_em;
+  const emS = document.getElementById('em-start');
+  const emE = document.getElementById('em-end');
+  emS.style.top = emTop + 'px'; emS.style.height = L_em + 'px';
+  emE.style.top = emTop + 'px'; emE.style.height = L_em + 'px';
+
+  // 紅三角線：寬 2px，顯式左移 1px 讓中線對齊 markerPos
+  const L_ml = state.markerLineLen;
+  const mlTop = TOP_LINE_BASE - L_ml;
+  const ml = document.getElementById('marker-line');
+  ml.style.top = mlTop + 'px';
+  ml.style.height = L_ml + 'px';
+  ml.style.left = (state.markerPos - 1) + 'px';
+
+  // 紅三角：可視寬 16px（兩側 8px 透明邊框），顯式左移 8px 讓尖點對齊 markerPos
+  const tri = document.getElementById('marker');
+  tri.style.top = TRI_TOP + 'px';
+  tri.style.left = (state.markerPos - 8) + 'px';
+
+  // 拖動感應區：寬 24px，左移 12px 置中於 markerPos
+  document.getElementById('marker-hit').style.left = (state.markerPos - 12) + 'px';
+
+  // 刻度
+  const ticksEl = document.getElementById('ticks');
+  ticksEl.innerHTML = '';
+  const ppdu = state.pixelsPerCm / UNITS[state.unit].factor;
+  const targetMajorPx = 70;
+  const majorInt = niceInterval(targetMajorPx / ppdu);
+  const minorInt = majorInt / 10;
+  let i = 0;
+  while (true) {
+    const v = i * minorInt;
+    const px = v * ppdu;
+    if (px > state.length + 0.001) break;
+    const isMajor = (i % 10 === 0);
+    const isMid   = (i % 5 === 0) && !isMajor;
+    const t = document.createElement('div');
+    t.className = 'tick ' + (isMajor ? 'major' : (isMid ? 'medium' : 'minor'));
+    t.style.left = px + 'px';
+    ticksEl.appendChild(t);
+    if (isMajor && i > 0) {
+      const lbl = document.createElement('div');
+      lbl.className = 'tick-label';
+      lbl.style.left = px + 'px';
+      lbl.style.transform = `translateX(-50%) rotate(${inv}rad)`;
+      lbl.textContent = fmt(v);
+      ticksEl.appendChild(lbl);
+    }
+    i++;
+    if (i > 5000) break;
+  }
+
+  // 紅三角的數值標籤：永遠位於三角尖點「螢幕下方」固定距離，避免旋轉時擋到三角
+  const labelEl = document.getElementById('marker-label');
+  const LABEL_OFFSET = 28;
+  const labelCx = state.markerPos + LABEL_OFFSET * Math.sin(state.angle);
+  const labelCy = TRI_TOP        + LABEL_OFFSET * Math.cos(state.angle);
+  labelEl.style.left = labelCx + 'px';
+  labelEl.style.top  = labelCy + 'px';
+  labelEl.style.transformOrigin = '50% 50%';
+  labelEl.style.transform = `translate(-50%, -50%) rotate(${inv}rad)`;
+
+  const markerCm  = state.markerPos / state.pixelsPerCm;
+  const markerVal = cmToUnit(markerCm);
+  const unitLbl = state.calibrated ? UNITS[state.unit].label : 'px';
+  const markerDisp = state.calibrated ? fmt(markerVal) : state.markerPos.toFixed(0);
+  labelEl.textContent = markerDisp + ' ' + unitLbl;
+
+  // 0 標籤：放在起點上方（端點延伸線之上 4px）
+  const zlbl = document.getElementById('zero-label');
+  zlbl.style.top = (emTop - 4) + 'px';
+  zlbl.style.transform = `translate(-50%, -100%) rotate(${inv}rad)`;
+
+  // 狀態列
+  const status = document.getElementById('status');
+  status.classList.toggle('snapping', snapVisualHit);
+  if (state.calibrated) {
+    const totalDisp = cmToUnit(state.length / state.pixelsPerCm);
+    const ppu = state.pixelsPerCm / UNITS[state.unit].factor;
+    status.classList.add('calibrated');
+    let html = `✅ ${t('calibratedLabel')} · <b>${fmt(ppu)} px = 1 ${UNITS[state.unit].label}</b><br>` +
+               `${t('statusLength')} ${fmt(totalDisp)} ${UNITS[state.unit].label} · ${t('statusMarker')} <b>${fmt(markerVal)} ${UNITS[state.unit].label}</b>`;
+    if (snapVisualHit) html += ' · ' + t('snapped');
+    status.innerHTML = html;
+  } else {
+    status.classList.remove('calibrated');
+    status.textContent = t('notCalibrated') + (snapVisualHit ? ' · ' + t('snapped') : '');
+  }
+}
+
+// ============== 邊緣偵測（Sobel） ==============
+
+const bgImg = document.getElementById('bg-image');
+let edgeData = null;
+
+function processBgImage() {
+  edgeData = null;
+  const snapStatus = document.getElementById('snap-status');
+  snapStatus.textContent = t('snapAnalyzing');
+  snapStatus.style.color = '#888';
+
+  if (!bgImg.naturalWidth || !bgImg.naturalHeight || bgImg.style.display === 'none') {
+    snapStatus.textContent = t('snapImageRequired');
+    return;
+  }
+  const maxDim = 1800;
+  let w = bgImg.naturalWidth, h = bgImg.naturalHeight;
+  let scale = 1;
+  if (Math.max(w, h) > maxDim) {
+    scale = maxDim / Math.max(w, h);
+    w = Math.round(w * scale);
+    h = Math.round(h * scale);
+  }
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  try { ctx.drawImage(bgImg, 0, 0, w, h); }
+  catch (e) { snapStatus.textContent = t('snapCannotAnalyze'); return; }
+  let imgData;
+  try { imgData = ctx.getImageData(0, 0, w, h); }
+  catch (e) { snapStatus.textContent = t('snapCannotAnalyze'); return; }
+  const data = imgData.data;
+  const gray = new Float32Array(w * h);
+  for (let i = 0, p = 0; p < w*h; i += 4, p++) {
+    gray[p] = 0.299*data[i] + 0.587*data[i+1] + 0.114*data[i+2];
+  }
+  const gx = new Float32Array(w * h);
+  const gy = new Float32Array(w * h);
+  for (let y = 1; y < h-1; y++) {
+    for (let x = 1; x < w-1; x++) {
+      const i = y*w + x;
+      gx[i] = -gray[i-w-1] + gray[i-w+1]
+              -2*gray[i-1]    + 2*gray[i+1]
+              -gray[i+w-1] + gray[i+w+1];
+      gy[i] = -gray[i-w-1] - 2*gray[i-w] - gray[i-w+1]
+              + gray[i+w-1] + 2*gray[i+w] + gray[i+w+1];
+    }
+  }
+  edgeData = { width: w, height: h, scale, gx, gy };
+  snapStatus.textContent = t('snapReady');
+  snapStatus.style.color = '#2e7d32';
+}
+
+// 返回 WORLD 座標下的圖片顯示區（#world 為視窗大小，bg-image 100% 填滿並 contain）
+function getImageRect() {
+  if (!bgImg.naturalWidth) return null;
+  const cw = window.innerWidth;
+  const ch = window.innerHeight;
+  const natW = bgImg.naturalWidth, natH = bgImg.naturalHeight;
+  const ir = natW / natH, cr = cw / ch;
+  let dw, dh, ox, oy;
+  if (ir > cr) { dw = cw; dh = cw / ir; ox = 0; oy = (ch - dh) / 2; }
+  else         { dh = ch; dw = ch * ir; oy = 0; ox = (cw - dw) / 2; }
+  return { ox, oy, dw, dh, natW, natH };
+}
+
+function sampleGradient(sx, sy) {
+  if (!edgeData) return null;
+  const ir = getImageRect();
+  if (!ir) return null;
+  const sToI = (ir.natW * edgeData.scale) / ir.dw;
+  const ix = (sx - ir.ox) * sToI;
+  const iy = (sy - ir.oy) * sToI;
+  if (ix < 1 || iy < 1 || ix >= edgeData.width-1 || iy >= edgeData.height-1) return null;
+  const x0 = Math.floor(ix), y0 = Math.floor(iy);
+  const fx = ix - x0, fy = iy - y0;
+  const w = edgeData.width;
+  const i00 = y0*w + x0, i01 = i00 + 1, i10 = i00 + w, i11 = i10 + 1;
+  const gxv = (1-fx)*(1-fy)*edgeData.gx[i00] + fx*(1-fy)*edgeData.gx[i01]
+            + (1-fx)*fy    *edgeData.gx[i10] + fx*fy    *edgeData.gx[i11];
+  const gyv = (1-fx)*(1-fy)*edgeData.gy[i00] + fx*(1-fy)*edgeData.gy[i01]
+            + (1-fx)*fy    *edgeData.gy[i10] + fx*fy    *edgeData.gy[i11];
+  return { gx: gxv, gy: gyv };
+}
+
+// 在 (sx, sy) 沿軸搜尋與軸垂直的最強邊緣，回傳 {delta, strength}
+function findSnap(sx, sy, axisAngle) {
+  if (!edgeData || !document.getElementById('snap-enabled').checked) return { delta: 0, strength: 0 };
+  // 觸控：縮小搜尋半徑、提高閾值，避免手指抖動就被吸走
+  const SEARCH_PX = currentDragIsTouch ?   8 : 14;
+  const PERP_PX   = currentDragIsTouch ?   2 :  3;
+  const THRESHOLD = currentDragIsTouch ? 320 : 200;
+  const cosA = Math.cos(axisAngle), sinA = Math.sin(axisAngle);
+  const cosP = -sinA, sinP = cosA;
+  let bestD = 0, bestStr = 0;
+  for (let d = -SEARCH_PX; d <= SEARCH_PX; d += 1) {
+    let total = 0, count = 0;
+    for (let p = -PERP_PX; p <= PERP_PX; p += 1) {
+      const x = sx + d*cosA + p*cosP;
+      const y = sy + d*sinA + p*sinP;
+      const g = sampleGradient(x, y);
+      if (!g) continue;
+      total += Math.abs(g.gx*cosA + g.gy*sinA);
+      count++;
+    }
+    if (count === 0) continue;
+    const avg = total / count;
+    if (avg > bestStr) { bestStr = avg; bestD = d; }
+  }
+  return bestStr > THRESHOLD
+    ? { delta: bestD, strength: bestStr }
+    : { delta: 0,    strength: bestStr };
+}
+
+// 給定軸上某點 (axisX, axisY)，計算對應的紅線中心螢幕座標
+function redLineScreenPos(axisX, axisY, angle, lineLen) {
+  const lineCenterY = 19 - lineLen / 2;     // 容器局部 Y（紅線中心）
+  const offY = lineCenterY - AXIS_Y;         // 相對於軸的垂直偏移（負值＝在尺上方）
+  return {
+    x: axisX - offY * Math.sin(angle),
+    y: axisY + offY * Math.cos(angle),
+  };
+}
+
+// 在「紅線位置」做 snap，回傳要套用到軸上的 delta
+function snapAtRedLine(axisX, axisY, angle, lineLen) {
+  const rl = redLineScreenPos(axisX, axisY, angle, lineLen);
+  const r = findSnap(rl.x, rl.y, angle);
+  snapVisualHit = (r.delta !== 0);
+  return r.delta;
+}
+
+// 拖尺身：3 條紅線都檢查，取最強的吸附
+function snapForBody(startX, startY, angle) {
+  if (!edgeData || !document.getElementById('snap-enabled').checked) return 0;
+  const cosA = Math.cos(angle), sinA = Math.sin(angle);
+  const targets = [
+    { axisDist: 0,                 lineLen: state.endmarkLen    },  // 起點紅線
+    { axisDist: state.length,      lineLen: state.endmarkLen    },  // 終點紅線
+    { axisDist: state.markerPos,   lineLen: state.markerLineLen },  // 紅三角紅線
+  ];
+  let bestD = 0, bestStr = 0;
+  for (const t of targets) {
+    const ax = startX + t.axisDist * cosA;
+    const ay = startY + t.axisDist * sinA;
+    const rl = redLineScreenPos(ax, ay, angle, t.lineLen);
+    const r = findSnap(rl.x, rl.y, angle);
+    if (r.strength > bestStr) { bestStr = r.strength; bestD = r.delta; }
+  }
+  snapVisualHit = (bestD !== 0);
+  return bestD;
+}
+
+// ============== 拖曳工具 ==============
+
+// 螢幕上的功能性切換（手機可見）。鍵盤的 Shift/Alt 仍生效（桌面用）
+let modLock = false;                              // 對應原本的 Shift
+const isShift = (ev) => !!(ev.shiftKey || modLock);
+const isAlt   = (ev) => !!ev.altKey;              // 桌面才有 Alt 暫停 snap
+
+const modLockBtn = document.getElementById('mod-lock');
+const modSnapBtn = document.getElementById('mod-snap');
+const snapCheckbox = document.getElementById('snap-enabled');
+
+// Lock / Snap toggle 共用的 debounce：手機上 click 偶爾會雙發
+function debounceTap(btn, fn) {
+  let last = 0;
+  btn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const now = Date.now();
+    if (now - last < 250) return;   // 250ms 內第二發吞掉
+    last = now;
+    fn();
+  });
+}
+
+// Lock：toggle，啟用後等同按住 Shift
+debounceTap(modLockBtn, () => {
+  modLock = !modLock;
+  modLockBtn.classList.toggle('active', modLock);
+});
+
+// Snap：直接切換 panel 內 Edge Snap 的真實狀態（雙向綁定）
+function syncSnapBtn() {
+  modSnapBtn.classList.toggle('active', snapCheckbox.checked);
+}
+debounceTap(modSnapBtn, () => {
+  snapCheckbox.checked = !snapCheckbox.checked;
+  snapCheckbox.dispatchEvent(new Event('change'));
+  syncSnapBtn();
+});
+snapCheckbox.addEventListener('change', syncSnapBtn);
+syncSnapBtn();
+
+// Pan 用：按住 Space 把所有尺的拖曳讓給 Pan
+let spaceHeld = false;
+// Snap 行為調整：知道目前是滑鼠還是觸控在拖
+let currentDragIsTouch = false;
+
+function attachDrag(el, onStart, onMove) {
+  const start = (e) => {
+    // 滑鼠：只接受左鍵；觸控：只接受單指（雙指交給 pinch 處理）
+    if (e.type === 'mousedown' && e.button !== 0) return;
+    if (e.type === 'touchstart' && e.touches.length !== 1) return;
+    if (spaceHeld) return; // Space 按住時把事件讓給 Pan 處理
+    currentDragIsTouch = (e.type === 'touchstart');
+    e.preventDefault();
+    e.stopPropagation();
+    const ctx = onStart ? onStart(e) : {};
+    const move = (ev) => {
+      if (ev.type === 'touchmove' && ev.touches.length !== 1) return;
+      onMove(ev, ctx);
+    };
+    const up = () => {
+      window.removeEventListener('mousemove', move);
+      window.removeEventListener('mouseup', up);
+      window.removeEventListener('touchmove', move);
+      window.removeEventListener('touchend', up);
+      window.removeEventListener('touchcancel', up);
+      snapVisualHit = false;
+      render();
+    };
+    if (e.type === 'mousedown') {
+      window.addEventListener('mousemove', move);
+      window.addEventListener('mouseup', up);
+    } else {
+      window.addEventListener('touchmove', move, { passive: false });
+      window.addEventListener('touchend', up);
+      window.addEventListener('touchcancel', up);
+    }
+  };
+  el.addEventListener('mousedown', start);
+  el.addEventListener('touchstart', start, { passive: false });
+}
+
+// 拖尺身：Shift = 鎖水平/垂直；Alt = 暫停吸附；否則沿三條紅線取最強吸附
+attachDrag(document.getElementById('rline'),
+  (e) => { const w = evWorld(e); return { sx: state.startX, sy: state.startY, mx: w.x, my: w.y }; },
+  (ev, ctx) => {
+    const w = evWorld(ev);
+    let dx = w.x - ctx.mx;
+    let dy = w.y - ctx.my;
+    if (isShift(ev)) {
+      if (Math.abs(dx) >= Math.abs(dy)) dy = 0;
+      else dx = 0;
+    }
+    let nx = ctx.sx + dx;
+    let ny = ctx.sy + dy;
+    snapVisualHit = false;
+    if (!isAlt(ev)) {
+      const d = snapForBody(nx, ny, state.angle);
+      if (d !== 0) {
+        nx += d * Math.cos(state.angle);
+        ny += d * Math.sin(state.angle);
+      }
+    }
+    state.startX = nx; state.startY = ny;
+    render();
+  });
+
+// 拖右端：以左端為軸
+attachDrag(document.getElementById('h-end'),
+  () => ({ px: state.startX, py: state.startY }),
+  (ev, ctx) => {
+    const w = evWorld(ev);
+    let nx = w.x, ny = w.y;
+    if (isShift(ev)) {
+      const a = Math.atan2(ny - ctx.py, nx - ctx.px);
+      const step = Math.PI / 12;
+      const snapped = Math.round(a / step) * step;
+      const d = Math.hypot(nx - ctx.px, ny - ctx.py);
+      nx = ctx.px + d * Math.cos(snapped);
+      ny = ctx.py + d * Math.sin(snapped);
+    }
+    const dx = nx - ctx.px, dy = ny - ctx.py;
+    const newAngle = Math.atan2(dy, dx);
+    snapVisualHit = false;
+    if (!isAlt(ev)) {
+      const d = snapAtRedLine(nx, ny, newAngle, state.endmarkLen);
+      if (d !== 0) {
+        nx += d * Math.cos(newAngle);
+        ny += d * Math.sin(newAngle);
+      }
+    }
+    state.angle = newAngle;
+    state.length = Math.max(40, Math.hypot(nx - ctx.px, ny - ctx.py));
+    if (state.markerPos > state.length) state.markerPos = state.length;
+    render();
+  });
+
+// 拖左端：以右端為軸
+attachDrag(document.getElementById('h-start'),
+  () => {
+    const ex = state.startX + state.length * Math.cos(state.angle);
+    const ey = state.startY + state.length * Math.sin(state.angle);
+    return { px: ex, py: ey };
+  },
+  (ev, ctx) => {
+    const w = evWorld(ev);
+    let nx = w.x, ny = w.y;
+    if (isShift(ev)) {
+      const a = Math.atan2(ny - ctx.py, nx - ctx.px);
+      const step = Math.PI / 12;
+      const snapped = Math.round(a / step) * step;
+      const d = Math.hypot(nx - ctx.px, ny - ctx.py);
+      nx = ctx.px + d * Math.cos(snapped);
+      ny = ctx.py + d * Math.sin(snapped);
+    }
+    const dx = nx - ctx.px, dy = ny - ctx.py;
+    const newAngle = Math.atan2(-dy, -dx);
+    snapVisualHit = false;
+    if (!isAlt(ev)) {
+      const d = snapAtRedLine(nx, ny, newAngle, state.endmarkLen);
+      if (d !== 0) {
+        nx += d * Math.cos(newAngle);
+        ny += d * Math.sin(newAngle);
+      }
+    }
+    state.angle = newAngle;
+    state.length = Math.max(40, Math.hypot(nx - ctx.px, ny - ctx.py));
+    state.startX = nx; state.startY = ny;
+    if (state.markerPos > state.length) state.markerPos = state.length;
+    render();
+  });
+
+// 紅三角
+const MARKER_END_GAP = 25;  // 紅三角與尾端最小間距（px）
+attachDrag(document.getElementById('marker-hit'),
+  () => ({}),
+  (ev) => {
+    const w = evWorld(ev);
+    const dx = w.x - state.startX;
+    const dy = w.y - state.startY;
+    let proj = dx * Math.cos(state.angle) + dy * Math.sin(state.angle);
+    let mp = Math.max(0, proj);  // 不限制上限：超過尾端時推開尾端
+    snapVisualHit = false;
+    if (!isAlt(ev) && edgeData && document.getElementById('snap-enabled').checked) {
+      const mwx = state.startX + mp * Math.cos(state.angle);
+      const mwy = state.startY + mp * Math.sin(state.angle);
+      const d = snapAtRedLine(mwx, mwy, state.angle, state.markerLineLen);
+      if (d !== 0) { mp = Math.max(0, mp + d); }
+    }
+    // 自動延伸尾端：保持紅三角與尾端至少 MARKER_END_GAP 距離
+    if (mp + MARKER_END_GAP > state.length) {
+      state.length = mp + MARKER_END_GAP;
+    }
+    state.markerPos = mp;
+    render();
+  });
+
+// ============== 校準 / 單位 / 透明度 ==============
+
+function doCalibrate() {
+  const v = parseFloat(document.getElementById('cal-value').value);
+  if (!isFinite(v) || v <= 0) { alert(t('alertEnterValue')); return; }
+  if (state.markerPos < 5) { alert(t('alertDragMarker')); return; }
+  const valueInCm = unitToCm(v);
+  state.pixelsPerCm = state.markerPos / valueInCm;
+  state.calibrated = true;
+  render();
+}
+document.getElementById('cal-btn').addEventListener('click', doCalibrate);
+document.getElementById('cal-value').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') doCalibrate();
+});
+document.getElementById('unit-select').addEventListener('change', (e) => {
+  state.unit = e.target.value; render();
+});
+document.getElementById('opacity').addEventListener('input', (e) => {
+  state.opacity = parseFloat(e.target.value);
+  document.getElementById('opacity-val').textContent = Math.round(state.opacity * 100) + '%';
+  render();
+});
+document.getElementById('reset-btn').addEventListener('click', () => {
+  state.startX = Math.max(280, window.innerWidth/2 - 200);
+  state.startY = Math.max(200, window.innerHeight/2);
+  state.length = 400; state.angle = 0;
+  state.markerPos = 200;
+  state.pixelsPerCm = 1;
+  state.calibrated = false;
+  document.getElementById('cal-value').value = '';
+  render();
+});
+
+// ============== 設定面板 ==============
+
+const mainView = document.getElementById('main-view');
+const settingsView = document.getElementById('settings-view');
+const ctrlTitle = document.getElementById('ctrl-title');
+const gearBtn = document.getElementById('gear-btn');
+const backBtn = document.getElementById('back-btn');
+
+const colorInput = document.getElementById('line-color');
+const endmarkColorInput = document.getElementById('endmark-color');
+const endmarkLenInput = document.getElementById('endmark-len');
+const endmarkLenVal = document.getElementById('endmark-len-val');
+const markerLineLenInput = document.getElementById('markerline-len');
+const markerLineLenVal = document.getElementById('markerline-len-val');
+const bodyColorInput = document.getElementById('body-color');
+const bodyAlphaInput = document.getElementById('body-alpha');
+const bodyAlphaVal   = document.getElementById('body-alpha-val');
+
+const endmarkChip = document.getElementById('endmark-chip');
+const lineChip    = document.getElementById('line-chip');
+
+function updateSelectedSwatch(containerSel, color) {
+  const c = (color || '').toLowerCase();
+  document.querySelectorAll(containerSel + ' .swatch').forEach(sw => {
+    sw.classList.toggle('selected', (sw.dataset.c || '').toLowerCase() === c);
+  });
+}
+
+function syncSettingsUI() {
+  colorInput.value = state.lineColor;
+  endmarkColorInput.value = state.endmarkColor;
+  endmarkLenInput.value = state.endmarkLen;
+  endmarkLenVal.textContent = state.endmarkLen + 'px';
+  markerLineLenInput.value = state.markerLineLen;
+  markerLineLenVal.textContent = state.markerLineLen + 'px';
+  bodyColorInput.value = state.bodyColor;
+  bodyAlphaInput.value = state.bodyAlpha;
+  bodyAlphaVal.textContent = Math.round(state.bodyAlpha * 100) + '%';
+  endmarkChip.style.background = state.endmarkColor;
+  lineChip.style.background    = state.lineColor;
+  updateSelectedSwatch('#endmark-popover', state.endmarkColor);
+  updateSelectedSwatch('#line-popover',    state.lineColor);
+}
+
+function closeAllPopovers() {
+  document.querySelectorAll('.color-popover.open').forEach(p => p.classList.remove('open'));
+  document.querySelectorAll('.color-chip.open').forEach(c => c.classList.remove('open'));
+}
+function openPopover(chip, popover) {
+  closeAllPopovers();
+  popover.classList.add('open');
+  chip.classList.add('open');
+}
+
+gearBtn.addEventListener('click', () => {
+  mainView.style.display = 'none';
+  settingsView.style.display = 'block';
+  gearBtn.style.display = 'none';
+  backBtn.style.display = 'block';
+  ctrlTitle.textContent = t('settingsTitle');
+  syncSettingsUI();
+});
+backBtn.addEventListener('click', () => {
+  mainView.style.display = 'block';
+  settingsView.style.display = 'none';
+  gearBtn.style.display = 'block';
+  backBtn.style.display = 'none';
+  ctrlTitle.textContent = t('appTitle');
+});
+
+// Marker line color — popover 內的 swatches 與自訂 picker
+colorInput.addEventListener('input', (e) => {
+  state.lineColor = e.target.value;
+  lineChip.style.background = state.lineColor;
+  saveSettings(); render();
+  updateSelectedSwatch('#line-popover', state.lineColor);
+});
+document.querySelectorAll('#line-popover .swatch').forEach(sw => {
+  sw.addEventListener('click', (e) => {
+    e.stopPropagation();
+    state.lineColor = sw.dataset.c;
+    colorInput.value = sw.dataset.c;
+    lineChip.style.background = state.lineColor;
+    saveSettings(); render();
+    updateSelectedSwatch('#line-popover', state.lineColor);
+    closeAllPopovers();
+  });
+});
+
+// End line color
+document.querySelectorAll('#endmark-popover .swatch').forEach(sw => {
+  sw.addEventListener('click', (e) => {
+    e.stopPropagation();
+    state.endmarkColor = sw.dataset.c;
+    endmarkColorInput.value = sw.dataset.c;
+    endmarkChip.style.background = state.endmarkColor;
+    saveSettings(); render();
+    updateSelectedSwatch('#endmark-popover', state.endmarkColor);
+    closeAllPopovers();
+  });
+});
+
+// Chip 點擊 → 切換 popover
+const endmarkPopover = document.getElementById('endmark-popover');
+const linePopover    = document.getElementById('line-popover');
+endmarkChip.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (endmarkChip.classList.contains('open')) closeAllPopovers();
+  else openPopover(endmarkChip, endmarkPopover);
+});
+lineChip.addEventListener('click', (e) => {
+  e.stopPropagation();
+  if (lineChip.classList.contains('open')) closeAllPopovers();
+  else openPopover(lineChip, linePopover);
+});
+// 點 popover 內部不關閉
+endmarkPopover.addEventListener('click', (e) => e.stopPropagation());
+linePopover   .addEventListener('click', (e) => e.stopPropagation());
+// 點外部關閉
+document.addEventListener('click', () => closeAllPopovers());
+// Esc 也可關閉
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAllPopovers(); });
+endmarkLenInput.addEventListener('input', (e) => {
+  state.endmarkLen = parseInt(e.target.value, 10);
+  endmarkLenVal.textContent = state.endmarkLen + 'px';
+  saveSettings(); render();
+});
+markerLineLenInput.addEventListener('input', (e) => {
+  state.markerLineLen = parseInt(e.target.value, 10);
+  markerLineLenVal.textContent = state.markerLineLen + 'px';
+  saveSettings(); render();
+});
+bodyColorInput.addEventListener('input', (e) => {
+  state.bodyColor = e.target.value;
+  saveSettings(); render();
+});
+bodyAlphaInput.addEventListener('input', (e) => {
+  state.bodyAlpha = parseFloat(e.target.value);
+  bodyAlphaVal.textContent = Math.round(state.bodyAlpha * 100) + '%';
+  saveSettings(); render();
+});
+endmarkColorInput.addEventListener('input', (e) => {
+  state.endmarkColor = e.target.value;
+  endmarkChip.style.background = state.endmarkColor;
+  saveSettings(); render();
+  updateSelectedSwatch('#endmark-popover', state.endmarkColor);
+});
+document.getElementById('settings-reset').addEventListener('click', () => {
+  state.lineColor = DEFAULTS.lineColor;
+  state.endmarkColor = DEFAULTS.endmarkColor;
+  state.endmarkLen = DEFAULTS.endmarkLen;
+  state.markerLineLen = DEFAULTS.markerLineLen;
+  state.bodyColor = DEFAULTS.bodyColor;
+  state.bodyAlpha = DEFAULTS.bodyAlpha;
+  saveSettings(); syncSettingsUI(); render();
+});
+
+// ============== 背景圖 ==============
+
+const bgHint = document.getElementById('bg-hint');
+function loadImageFile(file) {
+  if (!file || !file.type.startsWith('image/')) return;
+  const reader = new FileReader();
+  reader.onload = (ev) => {
+    bgImg.onload = () => { processBgImage(); };
+    bgImg.src = ev.target.result;
+    bgImg.style.display = 'block';
+    bgHint.style.display = 'none';
+  };
+  reader.readAsDataURL(file);
+}
+document.getElementById('bg-input').addEventListener('change', (e) => {
+  if (e.target.files[0]) loadImageFile(e.target.files[0]);
+});
+document.getElementById('replace-bg').addEventListener('click', () => {
+  openCameraModal();
+});
+bgHint.addEventListener('click', () => { document.getElementById('bg-input').click(); });
+window.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  if (bgImg.style.display === 'none') bgHint.classList.add('dragover');
+});
+window.addEventListener('dragleave', (e) => {
+  if (e.target === document || e.relatedTarget === null) bgHint.classList.remove('dragover');
+});
+window.addEventListener('drop', (e) => {
+  e.preventDefault();
+  bgHint.classList.remove('dragover');
+  if (e.dataTransfer.files.length > 0) loadImageFile(e.dataTransfer.files[0]);
+});
+window.addEventListener('paste', (e) => {
+  const items = e.clipboardData?.items;
+  if (!items) return;
+  for (const item of items) {
+    if (item.type && item.type.startsWith('image/')) { loadImageFile(item.getAsFile()); break; }
+  }
+});
+
+window.addEventListener('resize', () => render());
+
+// ============== Zoom / Pan ==============
+
+const worldEl = document.getElementById('world');
+const zoomInfoEl = document.getElementById('zoom-info');
+const ZOOM_MIN = 0.2, ZOOM_MAX = 20;
+
+function isAtFit() {
+  return Math.abs(state.zoom - 1) < 0.001 &&
+         Math.abs(state.panX) < 0.5 &&
+         Math.abs(state.panY) < 0.5;
+}
+
+function applyZoom() {
+  worldEl.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.zoom})`;
+  zoomInfoEl.textContent = Math.round(state.zoom * 100) + '%';
+  if (isAtFit()) {
+    zoomInfoEl.style.opacity = '0';
+    zoomInfoEl.style.pointerEvents = 'none';
+  } else {
+    zoomInfoEl.style.display = 'block';
+    zoomInfoEl.style.opacity = '1';
+    zoomInfoEl.style.pointerEvents = 'auto';
+  }
+}
+
+function fitToView() {
+  state.zoom = 1;
+  state.panX = 0;
+  state.panY = 0;
+  applyZoom();
+}
+
+zoomInfoEl.addEventListener('click', fitToView);
+document.getElementById('fit-view').addEventListener('click', fitToView);
+
+// 把客戶端座標（screen pixels）轉成 world 座標
+function evWorld(ev) {
+  let cx, cy;
+  if (ev.touches && ev.touches.length > 0)        { cx = ev.touches[0].clientX; cy = ev.touches[0].clientY; }
+  else if (ev.changedTouches && ev.changedTouches.length > 0) { cx = ev.changedTouches[0].clientX; cy = ev.changedTouches[0].clientY; }
+  else                                            { cx = ev.clientX; cy = ev.clientY; }
+  return { x: (cx - state.panX) / state.zoom, y: (cy - state.panY) / state.zoom };
+}
+
+function setZoomAround(newZoom, screenX, screenY) {
+  newZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, newZoom));
+  // 以 (screenX, screenY) 為中心縮放：保持該螢幕點對應的 world 座標不變
+  const worldX = (screenX - state.panX) / state.zoom;
+  const worldY = (screenY - state.panY) / state.zoom;
+  state.panX = screenX - worldX * newZoom;
+  state.panY = screenY - worldY * newZoom;
+  state.zoom = newZoom;
+  applyZoom();
+}
+
+// 滑鼠滾輪／觸控板捏合縮放
+window.addEventListener('wheel', (ev) => {
+  if (ev.target.closest('#controls')) return;
+  if (ev.target.closest('#camera-modal')) return;
+  ev.preventDefault();
+  // Mac 觸控板捏合 → ctrlKey + wheel；一般滾輪 → 也當縮放
+  // Shift + 滾輪 = 水平 pan
+  if (ev.shiftKey && !ev.ctrlKey) {
+    state.panX -= ev.deltaY;
+    applyZoom();
+    return;
+  }
+  // ctrlKey 時用較小的縮放係數（捏合會發很多事件）
+  const baseFactor = ev.ctrlKey ? 1.03 : 1.12;
+  const factor = ev.deltaY < 0 ? baseFactor : 1 / baseFactor;
+  setZoomAround(state.zoom * factor, ev.clientX, ev.clientY);
+}, { passive: false });
+
+// 觸控：兩指捏合 + 平移；單指交給原拖曳處理
+let pinch = null;
+window.addEventListener('touchstart', (e) => {
+  if (e.target.closest('#controls')) return;
+  if (e.target.closest('#camera-modal')) return;
+  if (e.touches.length === 2) {
+    e.preventDefault();
+    const a = e.touches[0], b = e.touches[1];
+    const mid = { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 };
+    const dist = Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
+    pinch = {
+      startMid: mid,
+      startDist: dist || 1,
+      startZoom: state.zoom,
+      startPan:  { x: state.panX, y: state.panY },
+      midWorld:  { x: (mid.x - state.panX) / state.zoom, y: (mid.y - state.panY) / state.zoom },
+    };
+  }
+}, { passive: false });
+window.addEventListener('touchmove', (e) => {
+  if (!pinch) return;
+  if (e.touches.length < 2) return;
+  e.preventDefault();
+  const a = e.touches[0], b = e.touches[1];
+  const mid = { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 };
+  const dist = Math.hypot(b.clientX - a.clientX, b.clientY - a.clientY);
+  let newZoom = pinch.startZoom * (dist / pinch.startDist);
+  newZoom = Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, newZoom));
+  // 保持 midWorld（捏合開始時兩指中點對應的 world 點）對齊到當下兩指中點
+  state.zoom = newZoom;
+  state.panX = mid.x - pinch.midWorld.x * newZoom;
+  state.panY = mid.y - pinch.midWorld.y * newZoom;
+  applyZoom();
+}, { passive: false });
+window.addEventListener('touchend', (e) => {
+  if (e.touches.length < 2) pinch = null;
+});
+
+// 雙擊重置縮放
+window.addEventListener('dblclick', (ev) => {
+  if (ev.target.closest('#controls')) return;
+  if (ev.target.closest('#camera-modal')) return;
+  if (ev.target.closest('#stage')) return;  // 點到尺不重置
+  state.zoom = 1; state.panX = 0; state.panY = 0;
+  applyZoom();
+});
+
+applyZoom();
+
+// ============== Pan：Space + drag (桌面)、空白處單指拖 (手機/桌面) ==============
+
+function isOnUI(target) {
+  return !!(target.closest('#controls') || target.closest('#camera-modal') ||
+            target.closest('#modifier-bar') || target.closest('#panel-toggle') ||
+            target.closest('#zoom-info')   || target.closest('#bg-hint'));
+}
+
+function startPan(e) {
+  if (isOnUI(e.target)) return;
+  const onRuler = !!e.target.closest('.ruler');
+  // 在尺上：只有按住 Space 才走 Pan；非尺：直接 Pan
+  if (onRuler && !spaceHeld) return;
+  if (e.type === 'mousedown' && e.button !== 0) return;
+  if (e.type === 'touchstart' && e.touches.length !== 1) return;
+
+  e.preventDefault();
+  e.stopPropagation();
+  document.body.classList.add('panning');
+
+  const c = (e.touches && e.touches[0]) ? e.touches[0] : e;
+  const startCtx = { px: state.panX, py: state.panY, mx: c.clientX, my: c.clientY };
+
+  const move = (ev) => {
+    if (ev.type === 'touchmove' && ev.touches.length !== 1) return;
+    ev.preventDefault();
+    const c2 = (ev.touches && ev.touches[0]) ? ev.touches[0] : ev;
+    state.panX = startCtx.px + (c2.clientX - startCtx.mx);
+    state.panY = startCtx.py + (c2.clientY - startCtx.my);
+    applyZoom();
+  };
+  const up = () => {
+    document.body.classList.remove('panning');
+    window.removeEventListener('mousemove', move);
+    window.removeEventListener('mouseup', up);
+    window.removeEventListener('touchmove', move);
+    window.removeEventListener('touchend', up);
+    window.removeEventListener('touchcancel', up);
+  };
+  if (e.type === 'mousedown') {
+    window.addEventListener('mousemove', move);
+    window.addEventListener('mouseup', up);
+  } else {
+    window.addEventListener('touchmove', move, { passive: false });
+    window.addEventListener('touchend', up);
+    window.addEventListener('touchcancel', up);
+  }
+}
+worldEl.addEventListener('mousedown',  startPan);
+worldEl.addEventListener('touchstart', startPan, { passive: false });
+
+// Space 鍵：桌面進入 Pan 模式（游標變手型）
+window.addEventListener('keydown', (e) => {
+  if (e.code !== 'Space' || spaceHeld) return;
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+  spaceHeld = true;
+  document.body.classList.add('pan-mode');
+  e.preventDefault();
+});
+window.addEventListener('keyup', (e) => {
+  if (e.code !== 'Space') return;
+  spaceHeld = false;
+  document.body.classList.remove('pan-mode');
+});
+
+// ============== 相機拍照 / 編輯 / 置換底圖 ==============
+
+const camModal      = document.getElementById('camera-modal');
+const camLiveStage  = document.getElementById('cam-live');
+const camEditStage  = document.getElementById('cam-edit');
+const camVideo      = document.getElementById('cam-video');
+const camErrorMsg   = document.getElementById('cam-error-msg');
+const editCanvas    = document.getElementById('edit-canvas');
+const cropRectEl    = document.getElementById('crop-rect');
+
+let camStream = null;
+let capturedImg = null;       // <img> with original photo
+let editRotation = 0;         // 0 / 90 / 180 / 270
+let editCropImg = null;       // {x, y, w, h} in (rotated) image pixels
+let canvasDisplay = null;     // {scale, offsetX, offsetY} for mapping image → display
+
+async function openCameraModal() {
+  camModal.classList.add('open');
+  camLiveStage.style.display = 'flex';
+  camEditStage.style.display = 'none';
+  camErrorMsg.style.display = 'none';
+  capturedImg = null;
+  editRotation = 0;
+  editCropImg = null;
+  if (!navigator.mediaDevices?.getUserMedia) {
+    showCamError(t('camNotSupported'));
+    return;
+  }
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: 'environment' } }
+    });
+    camVideo.srcObject = camStream;
+  } catch (e) {
+    showCamError(t('camCannotAccess') + (e.message || e.name) + '.');
+  }
+}
+function showCamError(msg) {
+  camErrorMsg.textContent = msg;
+  camErrorMsg.style.display = 'block';
+}
+function closeCameraModal() {
+  if (camStream) {
+    camStream.getTracks().forEach(t => t.stop());
+    camStream = null;
+  }
+  camVideo.srcObject = null;
+  camModal.classList.remove('open');
+  capturedImg = null;
+}
+
+document.getElementById('cam-cancel').addEventListener('click', closeCameraModal);
+document.getElementById('cam-upload').addEventListener('click', () => {
+  // Trigger existing file picker
+  closeCameraModal();
+  document.getElementById('bg-input').click();
+});
+document.getElementById('cam-shoot').addEventListener('click', () => {
+  if (!camVideo.videoWidth) { showCamError(t('camNotReady')); return; }
+  const c = document.createElement('canvas');
+  c.width = camVideo.videoWidth;
+  c.height = camVideo.videoHeight;
+  c.getContext('2d').drawImage(camVideo, 0, 0);
+  const url = c.toDataURL('image/jpeg', 0.92);
+  const img = new Image();
+  img.onload = () => {
+    capturedImg = img;
+    enterEditStage();
+  };
+  img.src = url;
+  // Stop camera once captured
+  if (camStream) {
+    camStream.getTracks().forEach(t => t.stop());
+    camStream = null;
+  }
+  camVideo.srcObject = null;
+});
+
+function getRotatedDim() {
+  if (!capturedImg) return { w: 0, h: 0 };
+  return (editRotation % 180 === 0)
+    ? { w: capturedImg.width,  h: capturedImg.height }
+    : { w: capturedImg.height, h: capturedImg.width  };
+}
+
+function enterEditStage() {
+  camLiveStage.style.display = 'none';
+  camEditStage.style.display = 'flex';
+  editRotation = 0;
+  const dim = getRotatedDim();
+  editCropImg = { x: 0, y: 0, w: dim.w, h: dim.h };
+  renderEditCanvas();
+}
+
+function renderEditCanvas() {
+  if (!capturedImg) return;
+  const dim = getRotatedDim();
+  // Set canvas to image size, but display will be scaled by max-width/max-height
+  editCanvas.width = dim.w;
+  editCanvas.height = dim.h;
+  const ctx = editCanvas.getContext('2d');
+  ctx.save();
+  ctx.translate(dim.w / 2, dim.h / 2);
+  ctx.rotate(editRotation * Math.PI / 180);
+  ctx.drawImage(capturedImg, -capturedImg.width / 2, -capturedImg.height / 2);
+  ctx.restore();
+  // After layout settles, position crop rect
+  requestAnimationFrame(updateCropRectDisplay);
+}
+
+function updateCropRectDisplay() {
+  if (!editCropImg) return;
+  const dim = getRotatedDim();
+  const cRect = editCanvas.getBoundingClientRect();
+  const aRect = document.getElementById('edit-area').getBoundingClientRect();
+  if (cRect.width === 0) return;
+  const sx = cRect.width / dim.w;
+  const sy = cRect.height / dim.h;
+  cropRectEl.style.left   = (cRect.left - aRect.left + editCropImg.x * sx) + 'px';
+  cropRectEl.style.top    = (cRect.top  - aRect.top  + editCropImg.y * sy) + 'px';
+  cropRectEl.style.width  = (editCropImg.w * sx) + 'px';
+  cropRectEl.style.height = (editCropImg.h * sy) + 'px';
+}
+window.addEventListener('resize', () => { if (camModal.classList.contains('open')) updateCropRectDisplay(); });
+
+document.getElementById('cam-rot-left').addEventListener('click', () => {
+  editRotation = (editRotation + 270) % 360;
+  const dim = getRotatedDim();
+  editCropImg = { x: 0, y: 0, w: dim.w, h: dim.h };
+  renderEditCanvas();
+});
+document.getElementById('cam-rot-right').addEventListener('click', () => {
+  editRotation = (editRotation + 90) % 360;
+  const dim = getRotatedDim();
+  editCropImg = { x: 0, y: 0, w: dim.w, h: dim.h };
+  renderEditCanvas();
+});
+document.getElementById('cam-reset-crop').addEventListener('click', () => {
+  const dim = getRotatedDim();
+  editCropImg = { x: 0, y: 0, w: dim.w, h: dim.h };
+  updateCropRectDisplay();
+});
+document.getElementById('cam-retake').addEventListener('click', () => {
+  closeCameraModal();
+  setTimeout(openCameraModal, 50);
+});
+
+// 裁切矩形拖移／改變大小
+(function setupCropDrag() {
+  let mode = null;
+  let start = null;
+  function clientXY(e) {
+    if (e.touches && e.touches.length)        return { x: e.touches[0].clientX,        y: e.touches[0].clientY };
+    if (e.changedTouches && e.changedTouches.length) return { x: e.changedTouches[0].clientX, y: e.changedTouches[0].clientY };
+    return { x: e.clientX, y: e.clientY };
+  }
+  function begin(e, m) {
+    e.preventDefault();
+    e.stopPropagation();
+    mode = m;
+    const cRect = editCanvas.getBoundingClientRect();
+    const dim = getRotatedDim();
+    const c = clientXY(e);
+    start = {
+      mx: c.x, my: c.y,
+      crop: { ...editCropImg },
+      sx: cRect.width / dim.w,
+      sy: cRect.height / dim.h,
+      dim,
+      isTouch: e.type === 'touchstart',
+    };
+    if (start.isTouch) {
+      window.addEventListener('touchmove', onMove, { passive: false });
+      window.addEventListener('touchend', onUp);
+      window.addEventListener('touchcancel', onUp);
+    } else {
+      window.addEventListener('mousemove', onMove);
+      window.addEventListener('mouseup', onUp);
+    }
+  }
+  function onMove(e) {
+    if (!mode) return;
+    if (e.type === 'touchmove') e.preventDefault();
+    const c = clientXY(e);
+    const dx = (c.x - start.mx) / start.sx;
+    const dy = (c.y - start.my) / start.sy;
+    let { x, y, w, h } = start.crop;
+    if (mode === 'move') { x += dx; y += dy; }
+    else if (mode === 'tl') { x += dx; y += dy; w -= dx; h -= dy; }
+    else if (mode === 'tr') { y += dy; w += dx; h -= dy; }
+    else if (mode === 'bl') { x += dx; w -= dx; h += dy; }
+    else if (mode === 'br') { w += dx; h += dy; }
+    if (w < 30) w = 30;
+    if (h < 30) h = 30;
+    if (x < 0) { if (mode !== 'move') w += x; x = 0; }
+    if (y < 0) { if (mode !== 'move') h += y; y = 0; }
+    if (x + w > start.dim.w) {
+      if (mode === 'move') x = start.dim.w - w;
+      else                 w = start.dim.w - x;
+    }
+    if (y + h > start.dim.h) {
+      if (mode === 'move') y = start.dim.h - h;
+      else                 h = start.dim.h - y;
+    }
+    editCropImg = { x, y, w, h };
+    updateCropRectDisplay();
+  }
+  function onUp() {
+    mode = null;
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+    window.removeEventListener('touchmove', onMove);
+    window.removeEventListener('touchend', onUp);
+    window.removeEventListener('touchcancel', onUp);
+  }
+  function attach(el, m) {
+    el.addEventListener('mousedown',  (e) => begin(e, m));
+    el.addEventListener('touchstart', (e) => begin(e, m), { passive: false });
+  }
+  cropRectEl.addEventListener('mousedown', (e) => {
+    if (e.target.classList.contains('crop-handle')) return;
+    begin(e, 'move');
+  });
+  cropRectEl.addEventListener('touchstart', (e) => {
+    if (e.target.classList.contains('crop-handle')) return;
+    begin(e, 'move');
+  }, { passive: false });
+  attach(cropRectEl.querySelector('.h-tl'), 'tl');
+  attach(cropRectEl.querySelector('.h-tr'), 'tr');
+  attach(cropRectEl.querySelector('.h-bl'), 'bl');
+  attach(cropRectEl.querySelector('.h-br'), 'br');
+})();
+
+// 圖像品質檢測（Laplacian 變異數）— 變異數越低越糊
+function laplacianVariance(srcCanvas) {
+  const w0 = srcCanvas.width, h0 = srcCanvas.height;
+  if (w0 < 8 || h0 < 8) return 0;
+  let sw = w0, sh = h0;
+  let work = srcCanvas;
+  const MAX = 600;
+  if (Math.max(w0, h0) > MAX) {
+    const scale = MAX / Math.max(w0, h0);
+    sw = Math.round(w0 * scale);
+    sh = Math.round(h0 * scale);
+    work = document.createElement('canvas');
+    work.width = sw; work.height = sh;
+    work.getContext('2d').drawImage(srcCanvas, 0, 0, sw, sh);
+  }
+  const data = work.getContext('2d').getImageData(0, 0, sw, sh).data;
+  const gray = new Float32Array(sw * sh);
+  for (let i = 0, p = 0; p < sw * sh; i += 4, p++) {
+    gray[p] = 0.299 * data[i] + 0.587 * data[i+1] + 0.114 * data[i+2];
+  }
+  let sum = 0, sumSq = 0, n = 0;
+  for (let y = 1; y < sh - 1; y++) {
+    for (let x = 1; x < sw - 1; x++) {
+      const i = y * sw + x;
+      const lap = 4 * gray[i] - gray[i-1] - gray[i+1] - gray[i-sw] - gray[i+sw];
+      sum += lap; sumSq += lap * lap; n++;
+    }
+  }
+  if (n === 0) return 0;
+  const mean = sum / n;
+  return sumSq / n - mean * mean;
+}
+
+document.getElementById('cam-confirm').addEventListener('click', () => {
+  if (!capturedImg || !editCropImg) return;
+  const dim = getRotatedDim();
+  // Render rotated full image, then crop
+  const rotCanvas = document.createElement('canvas');
+  rotCanvas.width = dim.w;
+  rotCanvas.height = dim.h;
+  const rctx = rotCanvas.getContext('2d');
+  rctx.save();
+  rctx.translate(dim.w / 2, dim.h / 2);
+  rctx.rotate(editRotation * Math.PI / 180);
+  rctx.drawImage(capturedImg, -capturedImg.width / 2, -capturedImg.height / 2);
+  rctx.restore();
+
+  const cropC = document.createElement('canvas');
+  cropC.width  = Math.round(editCropImg.w);
+  cropC.height = Math.round(editCropImg.h);
+  cropC.getContext('2d').drawImage(rotCanvas,
+    editCropImg.x, editCropImg.y, editCropImg.w, editCropImg.h,
+    0, 0, cropC.width, cropC.height);
+
+  // 圖像品質檢測
+  const variance = laplacianVariance(cropC);
+  // 經驗值：變異數 < 80 ≈ 模糊；< 30 ≈ 嚴重糊
+  if (variance < 80) {
+    if (!confirm(t('alertLowQuality'))) {
+      return;
+    }
+  }
+
+  const url = cropC.toDataURL('image/jpeg', 0.9);
+  bgImg.onload = () => { processBgImage(); };
+  bgImg.src = url;
+  bgImg.style.display = 'block';
+  bgHint.style.display = 'none';
+  closeCameraModal();
+});
+
+// ============== 控制面板拖曳 ==============
+
+(function() {
+  const handle = document.getElementById('ctrl-header');
+  const panel = document.getElementById('controls');
+  let dragging = false, ox = 0, oy = 0;
+  handle.addEventListener('mousedown', (e) => {
+    if (e.target.closest('.hdr-btn')) return; // 不要把標頭按鈕當拖把手
+    dragging = true;
+    const rect = panel.getBoundingClientRect();
+    ox = e.clientX - rect.left;
+    oy = e.clientY - rect.top;
+    e.preventDefault();
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    panel.style.left = Math.max(0, Math.min(window.innerWidth  - panel.offsetWidth, e.clientX - ox)) + 'px';
+    panel.style.top  = Math.max(0, Math.min(window.innerHeight - 40,                   e.clientY - oy)) + 'px';
+  });
+  window.addEventListener('mouseup', () => dragging = false);
+})();
+
+// ============== Language ==============
+
+document.getElementById('lang-select').addEventListener('change', (e) => {
+  applyLang(e.target.value);
+});
+
+// 教學影片連結：以彈出視窗開啟（看完關掉），事件委派以支援切語言後重渲染
+document.getElementById('hint').addEventListener('click', (e) => {
+  const a = e.target.closest('.tut-link');
+  if (!a) return;
+  e.preventDefault();
+  const w = Math.min(900, Math.round(window.innerWidth  * 0.8));
+  const h = Math.min(640, Math.round(window.innerHeight * 0.8));
+  const left = Math.round((window.screen.width  - w) / 2);
+  const top  = Math.round((window.screen.height - h) / 2);
+  window.open(a.href, 'dragscale-tutorial',
+    `width=${w},height=${h},left=${left},top=${top},resizable=yes,scrollbars=yes`);
+});
+
+// ============== Panel 開關 ==============
+
+function setPanelOpen(open) {
+  document.body.classList.toggle('panel-open', open);
+  document.body.classList.toggle('panel-closed', !open);
+}
+function isMobileViewport() {
+  return window.matchMedia('(max-width: 700px)').matches;
+}
+document.getElementById('close-btn').addEventListener('click', () => setPanelOpen(false));
+document.getElementById('panel-toggle').addEventListener('click', () => setPanelOpen(true));
+
+// ============== 初始化 ==============
+
+state.startX = Math.max(160, window.innerWidth/2 - 160);
+state.startY = Math.max(140, window.innerHeight/2);
+setPanelOpen(!isMobileViewport());
+// 語言：localStorage > 瀏覽器預設 > en
+applyLang(localStorage.getItem('dragScaleLang') || detectBrowserLang());
+syncSettingsUI();
+render();
+</script>
+</body>
+</html>
